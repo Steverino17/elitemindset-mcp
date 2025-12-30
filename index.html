@@ -5,18 +5,6 @@
   <title>EliteMindset.ai – Service Status</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <!-- Content Security Policy (required for submission) -->
-  <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self';
-                 img-src 'self' data:;
-                 style-src 'self' 'unsafe-inline';
-                 script-src 'self';
-                 connect-src 'self';
-                 base-uri 'self';
-                 form-action 'self';
-                 frame-ancestors 'none';
-                 upgrade-insecure-requests">
-
   <style>
     body {
       margin: 0;
@@ -122,9 +110,17 @@
       padding-top: 24px;
       font-size: 14px;
       color: #cbd2e6;
+      flex-wrap: wrap;
+      gap: 16px;
     }
 
-    .footer a {
+    .footer-links {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .footer-links a {
       color: #7fb3ff;
       text-decoration: none;
       border: 1px solid rgba(255,255,255,0.2);
@@ -177,7 +173,12 @@
 
     <div class="footer">
       <div>© 2026 EliteMindset.ai</div>
-      <a href="https://elitemindset.ai" target="_blank">Visit EliteMindset.ai</a>
+
+      <div class="footer-links">
+        <a href="https://elitemindset.ai/privacy-policy" target="_blank" rel="noopener">Privacy Policy</a>
+        <a href="https://elitemindset.ai/contact" target="_blank" rel="noopener">Contact</a>
+        <a href="https://elitemindset.ai" target="_blank" rel="noopener">Visit EliteMindset.ai</a>
+      </div>
     </div>
   </div>
 
