@@ -4,6 +4,19 @@
   <meta charset="UTF-8" />
   <title>EliteMindset.ai – Service Status</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Content Security Policy (required for submission) -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 img-src 'self' data:;
+                 style-src 'self' 'unsafe-inline';
+                 script-src 'self';
+                 connect-src 'self';
+                 base-uri 'self';
+                 form-action 'self';
+                 frame-ancestors 'none';
+                 upgrade-insecure-requests">
+
   <style>
     body {
       margin: 0;
@@ -120,6 +133,7 @@
     }
   </style>
 </head>
+
 <body>
 
   <div class="header">
@@ -138,6 +152,7 @@
 
   <div class="card">
     <h1>Everything is running correctly.</h1>
+
     <p>
       This endpoint supports the EliteMindset.ai ChatGPT app.
       If you’re seeing this page, the service is online.
