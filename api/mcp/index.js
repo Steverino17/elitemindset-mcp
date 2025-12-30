@@ -1,24 +1,23 @@
 export default async function handler(req, res) {
   if (req.method !== "POST") {
-    res.status(405).json({ error: "Use POST" });
-    return;
+    return res.status(405).json({ error: "Use POST" });
   }
 
   const msg = req.body || {};
-  const id = msg.id ?? null;
+  const { jsonrpc, id, method, params } = msg;
 
-  if (msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
-    res.status(400).json({
+  // Basic JSON-RPC validation
+  if (jsonrpc !== "2.0" || typeof method !== "string") {
+    return res.status(400).json({
       jsonrpc: "2.0",
-      id,
-      error: { code: -32600, message: "Invalid Request" }
+      id: id ?? null,
+      error: { code: -32600, message: "Invalid Request" },
     });
-    return;
   }
 
-  // Tool list
-  if (msg.method === "tools/list") {
-    res.json({
+  // 1) Tool discovery
+  if (method === "tools/list") {
+    return res.json({
       jsonrpc: "2.0",
       id,
       result: {
@@ -26,54 +25,81 @@ export default async function handler(req, res) {
           {
             name: "next_best_step",
             description:
-              "Given a goal (and optional blocker), returns one clear next step.",
+              "Use when a user feels stuck, overwhelmed, or unsure what to do next. Returns one concrete, time-boxed action they can take immediately to regain momentum.",
             inputSchema: {
               type: "object",
               properties: {
-                goal: { type: "string" },
-                blocker: { type: "string" }
+                goal: {
+                  type: "string",
+                  description: "What the user is trying to achieve",
+                },
+                blocker: {
+                  type: "string",
+                  description: "What feels stuck or unclear right now",
+                },
+                time_available: {
+                  type: "number",
+                  description:
+                    "How many minutes the user can spend right now (e.g. 10, 30, 60)",
+                },
               },
-              required: ["goal"]
-            }
-          }
-        ]
-      }
+              required: ["goal", "blocker"],
+              additionalProperties: false,
+            },
+          },
+        ],
+      },
     });
-    return;
   }
 
-  // Tool execution
-  if (msg.method === "tools/call") {
-    const { name, arguments: args } = msg.params || {};
+  // 2) Tool execution
+  if (method === "tools/call") {
+    const safeParams = params || {};
+    const name = safeParams.name;
+    const args = safeParams.arguments || {};
+
     if (name !== "next_best_step") {
-      res.json({
+      return res.status(400).json({
         jsonrpc: "2.0",
         id,
-        error: { code: -32601, message: "Tool not found" }
+        error: { code: -32601, message: `Unknown tool: ${String(name)}` },
       });
-      return;
     }
 
-    const goal = args?.goal || "";
-    const blocker = args?.blocker || "";
+    const goal = String(args.goal ?? "").trim();
+    const blocker = String(args.blocker ?? "").trim();
+    const time = Number(args.time_available ?? 15);
 
-    const step = blocker
-      ? `Write down the smallest action you can take in 10 minutes to move past: "${blocker}".`
-      : `Define the first concrete action you can complete in 10 minutes toward: "${goal}".`;
+    if (!goal || !blocker) {
+      return res.status(400).json({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32602, message: "Missing required fields: goal, blocker" },
+      });
+    }
 
-    res.json({
+    let action;
+    if (!Number.isFinite(time) || time <= 10) {
+      action = `Spend 10 minutes writing down the smallest action that would move you past "${blocker}". Do not optimize—just write.`;
+    } else if (time <= 30) {
+      action = `Spend ${Math.round(time)} minutes creating a rough outline or draft related to "${goal}". Stop when time is up.`;
+    } else {
+      action = `Use ${Math.round(time)} minutes to actively work on one concrete piece of "${goal}"—prototype, test, or write something that exists outside your head.`;
+    }
+
+    return res.json({
       jsonrpc: "2.0",
       id,
       result: {
-        content: [{ type: "text", text: step }]
-      }
+        content: [{ type: "text", text: action }],
+      },
     });
-    return;
   }
 
-  res.json({
+  // Unknown method (JSON-RPC style)
+  return res.status(400).json({
     jsonrpc: "2.0",
     id,
-    error: { code: -32601, message: "Method not found" }
+    error: { code: -32601, message: `Unknown method: ${method}` },
   });
 }
