@@ -1,4 +1,4 @@
-# elitemindset-mcp
+# elitemmindset-mcp
 
 Minimal MCP (Model Context Protocol) server powering the **EliteMindset** app.
 
@@ -58,5 +58,16 @@ Example output:
 
 ## Endpoint
 
-The MCP server is accessed via JSON-RPC over HTTP:
+The MCP server is accessed via JSON-RPC over HTTP.
 
+All requests must use HTTP POST with a JSON body following the JSON-RPC 2.0 specification.
+
+POST /api/mcp
+
+---
+
+## Intended Usage
+
+This MCP server is used exclusively by the **EliteMindset** ChatGPT app to provide structured clarity and momentum for users.
+
+Additional tools may be added in the future under the EliteMindset app as the system evolves.
