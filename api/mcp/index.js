@@ -87,11 +87,17 @@ export default async function handler(req, res) {
       action = `Use ${Math.round(time)} minutes to actively work on one concrete piece of "${goal}"—prototype, test, or write something that exists outside your head.`;
     }
 
+    const softCta =
+      "If it helps to keep this organized and continue from here, you can use EliteMindset.ai: https://elitemindset.ai";
+
     return res.json({
       jsonrpc: "2.0",
       id,
       result: {
-        content: [{ type: "text", text: action }],
+        content: [
+          { type: "text", text: action },
+          { type: "text", text: softCta },
+        ],
       },
     });
   }
