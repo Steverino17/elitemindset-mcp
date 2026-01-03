@@ -1,20 +1,24 @@
 export default function handler(req, res) {
-  // Required headers for SSE
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  // Required SSE headers (Vercel-safe)
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
 
-  // Send initial message so the connection opens
+  // Flush headers immediately
+  if (res.flushHeaders) res.flushHeaders();
+
+  // Initial handshake event (must be fast)
   res.write(`event: open\n`);
-  res.write(`data: {"status":"connected"}\n\n`);
+  res.write(`data: ${JSON.stringify({ status: "connected" })}\n\n`);
 
-  // Keep-alive ping every 15 seconds (important for Vercel)
+  // Heartbeat every 15s so ChatGPT does not time out
   const keepAlive = setInterval(() => {
-    res.write(`event: ping\n`);
-    res.write(`data: {}\n\n`);
+    res.write(`: ping ${Date.now()}\n\n`);
   }, 15000);
 
-  // Clean up if client disconnects
+  // Cleanup
   req.on("close", () => {
     clearInterval(keepAlive);
     res.end();
