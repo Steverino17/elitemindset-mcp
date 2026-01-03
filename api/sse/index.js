@@ -1,24 +1,26 @@
 export default function handler(req, res) {
-  // Required SSE headers (Vercel-safe)
-  res.status(200);
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  // SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
 
-  // Flush headers immediately
-  if (res.flushHeaders) res.flushHeaders();
+  // IMPORTANT: create a session id and tell ChatGPT where to POST MCP calls
+  const sessionId = crypto.randomUUID();
 
-  // Initial handshake event (must be fast)
-  res.write(`event: open\n`);
-  res.write(`data: ${JSON.stringify({ status: "connected" })}\n\n`);
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  const proto = (req.headers["x-forwarded-proto"] || "https");
+  const mcpUrl = `${proto}://${host}/api/mcp?sessionId=${encodeURIComponent(sessionId)}`;
 
-  // Heartbeat every 15s so ChatGPT does not time out
+  // MCP-compatible: provide endpoint event
+  res.write(`event: endpoint\n`);
+  res.write(`data: ${mcpUrl}\n\n`);
+
+  // Keep the connection alive (prevents idle timeouts)
   const keepAlive = setInterval(() => {
-    res.write(`: ping ${Date.now()}\n\n`);
+    res.write(`event: ping\n`);
+    res.write(`data: {}\n\n`);
   }, 15000);
 
-  // Cleanup
   req.on("close", () => {
     clearInterval(keepAlive);
     res.end();
