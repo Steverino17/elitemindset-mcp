@@ -1,113 +1,110 @@
-import express from 'express';
-
-const app = express();
-app.use(express.json());
+import { createServer } from "node:http";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
 
 const PORT = process.env.PORT || 3000;
+const MCP_PATH = "/mcp";
 
-// MCP endpoint
-app.post('/api/mcp', async (req, res) => {
-  const { jsonrpc, id, method, params } = req.body || {};
+// Create the MCP server
+function createEliteMindsetServer() {
+  const server = new McpServer({
+    name: "elitemindset-mcp",
+    version: "1.0.0",
+  });
 
-  if (jsonrpc !== "2.0" || typeof method !== "string") {
-    return res.status(400).json({
-      jsonrpc: "2.0",
-      id: id ?? null,
-      error: { code: -32600, message: "Invalid Request" },
-    });
-  }
+  // Register the next_best_step tool
+  server.tool(
+    "next_best_step",
+    "Use when a user feels stuck, overwhelmed, or unsure what to do next. Returns one concrete, time-boxed action they can take immediately to regain momentum.",
+    {
+      goal: z.string().describe("What the user is trying to achieve"),
+      blocker: z.string().describe("What feels stuck or unclear right now"),
+      time_available: z.number().optional().describe("How many minutes available (e.g. 10, 30, 60)"),
+    },
+    async ({ goal, blocker, time_available }) => {
+      const time = time_available || 15;
+      let action;
 
-  if (method === "tools/list") {
-    return res.json({
-      jsonrpc: "2.0",
-      id,
-      result: {
-        tools: [{
-          name: "next_best_step",
-          description: "Use when a user feels stuck, overwhelmed, or unsure what to do next.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              goal: { type: "string", description: "What the user is trying to achieve" },
-              blocker: { type: "string", description: "What feels stuck or unclear right now" },
-              time_available: { type: "number", description: "Minutes available (e.g. 10, 30, 60)" },
-            },
-            required: ["goal", "blocker"],
+      if (time <= 10) {
+        action = `Spend 10 minutes writing down the smallest action that would move you past "${blocker}". Do not optimize—just write.`;
+      } else if (time <= 30) {
+        action = `Spend ${Math.round(time)} minutes creating a rough outline or draft related to "${goal}". Stop when time is up.`;
+      } else {
+        action = `Use ${Math.round(time)} minutes to actively work on one concrete piece of "${goal}"—prototype, test, or write something that exists outside your head.`;
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: action,
           },
-        }],
-      },
+        ],
+      };
+    }
+  );
+
+  return server;
+}
+
+// Create HTTP server
+const httpServer = createServer(async (req, res) => {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+
+  // Handle CORS preflight
+  if (req.method === "OPTIONS" && url.pathname === MCP_PATH) {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, GET, OPTIONS, DELETE",
+      "Access-Control-Allow-Headers": "content-type, mcp-session-id",
+      "Access-Control-Expose-Headers": "Mcp-Session-Id",
     });
+    res.end();
+    return;
   }
 
-  if (method === "tools/call") {
-    const name = params?.name;
-    const args = params?.arguments || {};
-
-    if (name !== "next_best_step") {
-      return res.status(400).json({
-        jsonrpc: "2.0",
-        id,
-        error: { code: -32601, message: `Unknown tool: ${name}` },
-      });
-    }
-
-    const goal = String(args.goal ?? "").trim();
-    const blocker = String(args.blocker ?? "").trim();
-    const time = Number(args.time_available ?? 15);
-
-    if (!goal || !blocker) {
-      return res.status(400).json({
-        jsonrpc: "2.0",
-        id,
-        error: { code: -32602, message: "Missing required fields: goal, blocker" },
-      });
-    }
-
-    let action;
-    if (!Number.isFinite(time) || time <= 10) {
-      action = `Spend 10 minutes writing down the smallest action that would move you past "${blocker}". Do not optimize—just write.`;
-    } else if (time <= 30) {
-      action = `Spend ${Math.round(time)} minutes creating a rough outline or draft related to "${goal}". Stop when time is up.`;
-    } else {
-      action = `Use ${Math.round(time)} minutes to actively work on one concrete piece of "${goal}"—prototype, test, or write something that exists outside your head.`;
-    }
-
-    return res.json({
-      jsonrpc: "2.0",
-      id,
-      result: { content: [{ type: "text", text: action }] },
-    });
+  // Health check endpoint
+  if (req.method === "GET" && url.pathname === "/") {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("EliteMindset MCP Server - Running");
+    return;
   }
 
-  return res.status(400).json({
-    jsonrpc: "2.0",
-    id,
-    error: { code: -32601, message: `Unknown method: ${method}` },
-  });
+  // MCP endpoint
+  const MCP_METHODS = new Set(["POST", "GET", "DELETE"]);
+  if (url.pathname === MCP_PATH && req.method && MCP_METHODS.has(req.method)) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+
+    const mcpServer = createEliteMindsetServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // stateless mode
+      enableJsonResponse: true,
+    });
+
+    res.on("close", () => {
+      transport.close();
+      mcpServer.close();
+    });
+
+    try {
+      await mcpServer.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      console.error("MCP Error:", error);
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Internal server error" }));
+    }
+    return;
+  }
+
+  // 404 for other paths
+  res.writeHead(404, { "content-type": "text/plain" });
+  res.end("Not found");
 });
 
-// SSE endpoint
-app.get('/api/sse', (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  const host = req.headers.host;
-  const protocol = req.headers['x-forwarded-proto'] || 'https';
-  const endpoint = `${protocol}://${host}/api/mcp`;
-
-  res.write(`event: endpoint\n`);
-  res.write(`data: ${endpoint}\n\n`);
-
-  const keepAlive = setInterval(() => {
-    res.write(`: keepalive\n\n`);
-  }, 15000);
-
-  req.on('close', () => {
-    clearInterval(keepAlive);
-  });
-});
-
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`EliteMindset MCP server running on port ${PORT}`);
+  console.log(`MCP endpoint: http://localhost:${PORT}${MCP_PATH}`);
 });
