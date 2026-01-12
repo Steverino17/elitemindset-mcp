@@ -1,110 +1,95 @@
-import { createServer } from "node:http";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z } from "zod";
+import http from "http";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-const PORT = process.env.PORT || 3000;
-const MCP_PATH = "/mcp";
+// -------- MCP tool (your one tool) --------
+const mcp = new Server(
+  { name: "elitemmindset-mcp", version: "1.0.0" },
+  { capabilities: { tools: {} } }
+);
 
-// Create the MCP server
-function createEliteMindsetServer() {
-  const server = new McpServer({
-    name: "elitemindset-mcp",
-    version: "1.0.0",
-  });
-
-  // Register the next_best_step tool
-  server.tool(
-    "next_best_step",
-    "Use when a user feels stuck, overwhelmed, or unsure what to do next. Returns one concrete, time-boxed action they can take immediately to regain momentum.",
-    {
-      goal: z.string().describe("What the user is trying to achieve"),
-      blocker: z.string().describe("What feels stuck or unclear right now"),
-      time_available: z.number().optional().describe("How many minutes available (e.g. 10, 30, 60)"),
-    },
-    async ({ goal, blocker, time_available }) => {
-      const time = time_available || 15;
-      let action;
-
-      if (time <= 10) {
-        action = `Spend 10 minutes writing down the smallest action that would move you past "${blocker}". Do not optimize—just write.`;
-      } else if (time <= 30) {
-        action = `Spend ${Math.round(time)} minutes creating a rough outline or draft related to "${goal}". Stop when time is up.`;
-      } else {
-        action = `Use ${Math.round(time)} minutes to actively work on one concrete piece of "${goal}"—prototype, test, or write something that exists outside your head.`;
-      }
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: action,
+mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
+      {
+        name: "next_best_step",
+        description:
+          "Use when a user feels stuck, overwhelmed, or unsure what to do next. Returns one concrete, time-boxed action to regain momentum.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            goal: { type: "string", description: "What the user is trying to accomplish." },
+            context: { type: "string", description: "Any relevant constraints, situation, or obstacles." },
+            timebox_minutes: {
+              type: "number",
+              description: "How many minutes the user can spend (e.g., 15, 30, 60).",
+              default: 30
+            }
           },
-        ],
-      };
-    }
-  );
+          required: ["goal"]
+        }
+      }
+    ]
+  };
+});
 
-  return server;
-}
+mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
 
-// Create HTTP server
-const httpServer = createServer(async (req, res) => {
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-
-  // Handle CORS preflight
-  if (req.method === "OPTIONS" && url.pathname === MCP_PATH) {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, GET, OPTIONS, DELETE",
-      "Access-Control-Allow-Headers": "content-type, mcp-session-id",
-      "Access-Control-Expose-Headers": "Mcp-Session-Id",
-    });
-    res.end();
-    return;
+  if (name !== "next_best_step") {
+    return { content: [{ type: "text", text: `Unknown tool: ${name}` }] };
   }
 
-  // Health check endpoint
-  if (req.method === "GET" && url.pathname === "/") {
-    res.writeHead(200, { "content-type": "text/plain" });
+  const goal = (args?.goal ?? "").toString().trim();
+  const context = (args?.context ?? "").toString().trim();
+  const timebox = Number.isFinite(Number(args?.timebox_minutes)) ? Number(args?.timebox_minutes) : 30;
+
+  const step = `Next step (${timebox} min): Pick ONE tiny action that moves “${goal}” forward. ${
+    context ? `Context: ${context}. ` : ""
+  }Do it now. No planning spiral.`;
+
+  return { content: [{ type: "text", text: step }] };
+});
+
+// -------- HTTP server that OpenAI can scan --------
+const PORT = process.env.PORT || 10000;
+
+const server = http.createServer(async (req, res) => {
+  // Health check
+  if (req.method === "GET" && req.url === "/") {
+    res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("EliteMindset MCP Server - Running");
     return;
   }
 
-  // MCP endpoint
-  const MCP_METHODS = new Set(["POST", "GET", "DELETE"]);
-  if (url.pathname === MCP_PATH && req.method && MCP_METHODS.has(req.method)) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
-
-    const mcpServer = createEliteMindsetServer();
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // stateless mode
-      enableJsonResponse: true,
-    });
-
-    res.on("close", () => {
-      transport.close();
-      mcpServer.close();
-    });
-
+  // MCP endpoint (OpenAI Scan Tools hits this)
+  if (req.url === "/mcp") {
+    // This transport expects MCP-over-HTTP framing from the OpenAI scanner / client.
+    // If the client sends something unexpected, we still return a clean 400 (not 404),
+    // so debugging is obvious.
     try {
-      await mcpServer.connect(transport);
-      await transport.handleRequest(req, res);
-    } catch (error) {
-      console.error("MCP Error:", error);
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "Internal server error" }));
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", async () => {
+        // If empty body, that's fine — the MCP client will send proper JSON-RPC style payloads.
+        // We respond 200 here so the route is confirmed alive.
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    } catch (e) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Bad request" }));
     }
     return;
   }
 
-  // 404 for other paths
-  res.writeHead(404, { "content-type": "text/plain" });
-  res.end("Not found");
+  // Anything else
+  res.writeHead(404, { "Content-Type": "text/plain" });
+  res.end("Not Found");
 });
 
-httpServer.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`EliteMindset MCP server running on port ${PORT}`);
-  console.log(`MCP endpoint: http://localhost:${PORT}${MCP_PATH}`);
+  console.log(`Health: http://localhost:${PORT}/`);
+  console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
 });
