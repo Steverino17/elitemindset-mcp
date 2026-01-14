@@ -23,17 +23,35 @@ function createEliteMindsetServer() {
       const g = (goal || "").trim();
       const c = (context || "").trim();
 
-      const step = g
-        ? `Set a 10-minute timer. Write ONE sentence that defines the outcome for: "${g}". Then list 3 tiny actions you could do in the next 15 minutes. Pick the easiest and do it immediately.`
-        : `Set a 10-minute timer. Write the one thing you're avoiding. Then do the smallest possible version of it for 5 minutes. Stop when the timer ends.`;
+      const lines = g
+        ? [
+            "Do this now (10 minutes):",
+            "1) Set a 10-minute timer.",
+            `2) Write ONE sentence: “If this worked, I’d have ______.” (for: "${g}")`,
+            "3) List 3 tiny actions you can do in the next 15 minutes.",
+            "4) Pick the easiest. Start it immediately.",
+          ]
+        : [
+            "Do this now (10 minutes):",
+            "1) Set a 10-minute timer.",
+            "2) Write the ONE thing you’re avoiding.",
+            "3) Do the smallest possible version for 5 minutes.",
+            "4) Stop when the timer ends. Reply “DONE” + what you did.",
+          ];
+
+      // Optional: keep context, but do NOT add bulk
+      if (c) lines.push(`(Context: ${c.slice(0, 120)})`);
+
+      // Hard cap: keep output tight even if context is huge
+      let text = lines.join("\n");
+      const words = text.split(/\s+/);
+      if (words.length > 120) text = words.slice(0, 120).join(" ") + "…";
 
       return {
         content: [
           {
             type: "text",
-            text:
-              step +
-              (c ? `\n\nContext noted: ${c}` : ""),
+            text,
           },
         ],
       };
