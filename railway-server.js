@@ -10,10 +10,9 @@ import { z } from "zod";
 const PORT = process.env.PORT || 10000;
 
 /**
- * Set in Render -> Environment:
+ * Optional but recommended in Render -> Environment:
  * PUBLIC_BASE_URL = https://YOUR-SERVICE.onrender.com
- *
- * This ensures absolute image URLs (best for ChatGPT rendering).
+ * (This makes image URLs absolute, which improves rendering reliability.)
  */
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
 
@@ -60,7 +59,7 @@ function normalizeText(...parts) {
 }
 
 function pickTopic(text) {
-  // Priority order matters: overwhelmed/stuck/unclear tend to be more specific than “ready”
+  // Priority order matters
   if (
     /(overwhelm|overwhelmed|too much|spinning|scattered|frazzled|burned out|burnt out|mental noise|swamped)/.test(
       text
@@ -99,21 +98,33 @@ function nextStepFor(topicKey) {
     case "overwhelmed":
       return {
         title: "Do this now (10 minutes)",
-        bullets: ["Set a 10-minute timer.", "Write the ONE thing creating the most noise.", "Do a 5-minute starter step."],
+        bullets: [
+          "Set a 10-minute timer.",
+          "Write the ONE thing creating the most noise.",
+          "Do a 5-minute starter step.",
+        ],
         start: "Write: The one thing is: ____",
       };
 
     case "stuck":
       return {
         title: "Do this now (8 minutes)",
-        bullets: ["Set an 8-minute timer.", "Pick a 2-minute starter action.", "Do it once. Stop when the timer ends."],
+        bullets: [
+          "Set an 8-minute timer.",
+          "Pick a 2-minute starter action.",
+          "Do it once. Stop when the timer ends.",
+        ],
         start: "Write: My 2-minute starter is: ____",
       };
 
     case "unclear":
       return {
         title: "Do this now (12 minutes)",
-        bullets: ["List 3 options (titles only).", "Pick the one with the fastest proof in 24 hours.", "Define the first visible deliverable (one sentence)."],
+        bullets: [
+          "List 3 options (titles only).",
+          "Pick the one with the fastest proof in 24 hours.",
+          "Define the first visible deliverable (one sentence).",
+        ],
         start: "Write: If I only win one thing today, it’s: ____",
       };
 
@@ -121,7 +132,11 @@ function nextStepFor(topicKey) {
     default:
       return {
         title: "Do this now (15 minutes)",
-        bullets: ["Pick ONE outcome for today (one sentence).", "Do the first 15-minute chunk.", "Lock the next chunk on your calendar."],
+        bullets: [
+          "Pick ONE outcome for today (one sentence).",
+          "Do the first 15-minute chunk.",
+          "Lock the next chunk on your calendar.",
+        ],
         start: "Write: Today’s outcome is: ____",
       };
   }
@@ -217,19 +232,30 @@ async function main() {
 
   const httpServer = createServer(async (req, res) => {
     try {
+      // 1) Health/home page so clicking the base URL works in a browser
+      if (req.method === "GET" && (req.url === "/" || req.url === "")) {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.end("EliteMindset MCP is running. Try /images/overwhelmed.png");
+        return;
+      }
+
+      // 2) Serve images
       const served = await tryServeImage(req, res);
       if (served) return;
 
+      // 3) MCP traffic
       const transport = new StreamableHTTPServerTransport({ req, res });
       await mcpServer.connect(transport);
-    } catch {
+    } catch (err) {
       res.statusCode = 500;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       res.end("Server error");
     }
   });
 
-  httpServer.listen(PORT, () => {
+  // CRITICAL for Render: bind to 0.0.0.0 so Render detects the open port
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`elitemindset-mcp listening on port ${PORT}`);
     if (!PUBLIC_BASE_URL) console.log("Tip: set PUBLIC_BASE_URL for absolute image URLs.");
   });
