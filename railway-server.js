@@ -1,13 +1,12 @@
 import express from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 
 const PORT = process.env.PORT || 10000;
 
 /**
  * Minimal state machine for "next_best_step"
- *
  * States:
  *  S1 = Start (stuck/overwhelmed)
  *  S2 = Reinforce (after DONE / action)
@@ -17,9 +16,7 @@ const PORT = process.env.PORT || 10000;
  * Tool returns a structured payload:
  *  { state, cta_allowed, message, ask, next_state }
  *
- * Notes:
- * - Stateless inference from user text (no DB).
- * - CTA is ONLY allowed in S2 and ONLY if cta_ok is true.
+ * CTA is ONLY allowed in S2 and ONLY if cta_ok is true.
  */
 
 function cleanText(v) {
@@ -78,7 +75,6 @@ function inferState(userText) {
   if (momentumRequest) return "S3";
   if (stuckSignal) return "S1";
 
-  // If the tool was called, default to S1.
   return "S1";
 }
 
@@ -119,7 +115,6 @@ function responseForState(state, { ctaOk }) {
     };
   }
 
-  // S4
   return {
     state: "S4",
     cta_allowed: false,
@@ -137,7 +132,7 @@ function buildUserText({ user_message, goal, context }) {
 
 // ---- MCP Server ----
 const mcp = new McpServer({
-  name: "elitemindset-mcp",
+  name: "elitemmindset-mcp",
   version: "1.0.0",
 });
 
@@ -145,41 +140,60 @@ mcp.tool(
   "next_best_step",
   "Use when a user feels stuck, overwhelmed, procrastinating, or unsure what to do next. Returns one calm, minimal next step using a simple state machine (S1–S4).",
   {
-    // Backwards compatible fields
     goal: z.string().optional(),
     context: z.string().optional(),
-
-    // Recommended fields for deterministic behavior
     user_message: z.string().optional(),
     cta_ok: z.boolean().optional(),
   },
   async ({ goal, context, user_message, cta_ok }) => {
-    const userText = buildUserText({ user_message, goal, context, user_message });
+    const userText = buildUserText({ user_message, goal, context });
     const state = inferState(userText);
     return responseForState(state, { ctaOk: Boolean(cta_ok) });
   }
 );
 
-// ---- HTTP Server ----
+// ---- HTTP Server (SSE transport expected by connector) ----
 const app = express();
+app.use(express.json({ limit: "1mb" }));
 
-// Fast health checks (some verifiers do GET first)
+// Health check (safe for browser)
 app.get("/", (_req, res) => res.status(200).send("OK"));
-app.get("/mcp", (_req, res) => res.status(200).send("OK"));
+app.get("/healthz", (_req, res) => res.status(200).send("OK"));
 
-// MCP endpoint handler (accept both "/" and "/mcp")
-async function handleMcp(req, res) {
+// Keep active SSE transports by sessionId
+const transports = new Map();
+
+// SSE endpoint (this is what the connector expects)
+app.get("/sse", async (req, res) => {
   try {
-    const transport = new StreamableHTTPServerTransport({ req, res });
+    const transport = new SSEServerTransport("/messages", res);
+    transports.set(transport.sessionId, transport);
+
+    res.on("close", () => {
+      transports.delete(transport.sessionId);
+    });
+
     await mcp.connect(transport);
   } catch (err) {
-    if (!res.headersSent) res.status(500).send("MCP transport error");
+    if (!res.headersSent) res.status(500).send("SSE init error");
   }
-}
-
-app.all("/", handleMcp);
-app.all("/mcp", handleMcp);
-
-app.listen(PORT, () => {
-  // Intentionally quiet.
 });
+
+// Message endpoint used by SSE transport
+app.post("/messages", async (req, res) => {
+  const sessionId = cleanText(req.query.sessionId);
+  const transport = transports.get(sessionId);
+
+  if (!transport) {
+    res.status(404).send("Unknown sessionId");
+    return;
+  }
+
+  try {
+    await transport.handlePostMessage(req, res);
+  } catch (err) {
+    if (!res.headersSent) res.status(500).send("Message handling error");
+  }
+});
+
+app.listen(PORT, () => {});
