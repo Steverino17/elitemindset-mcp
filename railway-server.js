@@ -7,6 +7,7 @@ const PORT = process.env.PORT || 10000;
 
 /**
  * Minimal state machine for "next_best_step"
+ *
  * States:
  *  S1 = Start (stuck/overwhelmed)
  *  S2 = Reinforce (after DONE / action)
@@ -17,7 +18,7 @@ const PORT = process.env.PORT || 10000;
  *  { state, cta_allowed, message, ask, next_state }
  *
  * Notes:
- * - We infer state from the user text (stateless, no DB).
+ * - Stateless inference from user text (no DB).
  * - CTA is ONLY allowed in S2 and ONLY if cta_ok is true.
  */
 
@@ -40,52 +41,48 @@ function inferState(userText) {
     /\bdone\b/.test(t) ||
     hasAny(t, ["i did", "i wrote", "i opened", "i sent", "i renamed", "finished", "completed"]);
 
-  const clarityRequest =
-    hasAny(t, [
-      "what should i focus",
-      "what do i focus",
-      "help me decide",
-      "which should i",
-      "which one should i",
-      "i need clarity",
-      "prioritize",
-      "priority",
-      "what's the plan",
-      "what is the plan",
-    ]);
+  const clarityRequest = hasAny(t, [
+    "what should i focus",
+    "what do i focus",
+    "help me decide",
+    "which should i",
+    "which one should i",
+    "i need clarity",
+    "prioritize",
+    "priority",
+    "what's the plan",
+    "what is the plan",
+  ]);
 
-  const momentumRequest =
-    hasAny(t, ["what next", "next step", "keep going", "continue", "now what"]);
+  const momentumRequest = hasAny(t, ["what next", "next step", "keep going", "continue", "now what"]);
 
-  const stuckSignal =
-    hasAny(t, [
-      "overwhelmed",
-      "overwhelm",
-      "stuck",
-      "procrast",
-      "spinning",
-      "confus",
-      "too many",
-      "scattered",
-      "paraly",
-      "can't start",
-      "cannot start",
-      "don't know where to start",
-      "dont know where to start",
-      "no clarity",
-    ]);
+  const stuckSignal = hasAny(t, [
+    "overwhelmed",
+    "overwhelm",
+    "stuck",
+    "procrast",
+    "spinning",
+    "confus",
+    "too many",
+    "scattered",
+    "paraly",
+    "can't start",
+    "cannot start",
+    "don't know where to start",
+    "dont know where to start",
+    "no clarity",
+  ]);
 
   if (doneSignal) return "S2";
   if (clarityRequest) return "S4";
   if (momentumRequest) return "S3";
   if (stuckSignal) return "S1";
 
-  // Default: if tool was called, assume they’re seeking movement (S1).
+  // If the tool was called, default to S1.
   return "S1";
 }
 
 function responseForState(state, { ctaOk }) {
-  // Razor-sharp minimal responses (no fluff, no long lists).
   if (state === "S1") {
     return {
       state: "S1",
@@ -148,41 +145,41 @@ mcp.tool(
   "next_best_step",
   "Use when a user feels stuck, overwhelmed, procrastinating, or unsure what to do next. Returns one calm, minimal next step using a simple state machine (S1–S4).",
   {
-    // Backwards-compatible fields (keep these)
+    // Backwards compatible fields
     goal: z.string().optional(),
     context: z.string().optional(),
 
-    // Recommended fields for deterministic state + CTA gating
+    // Recommended fields for deterministic behavior
     user_message: z.string().optional(),
-    cta_ok: z.boolean().optional(), // only allow CTA when true (typically after 3–4 user replies + action)
+    cta_ok: z.boolean().optional(),
   },
   async ({ goal, context, user_message, cta_ok }) => {
-    const userText = buildUserText({ user_message, goal, context });
+    const userText = buildUserText({ user_message, goal, context, user_message });
     const state = inferState(userText);
-    const payload = responseForState(state, { ctaOk: Boolean(cta_ok) });
-
-    // Structured, reviewer-friendly payload:
-    return payload;
+    return responseForState(state, { ctaOk: Boolean(cta_ok) });
   }
 );
 
-// ---- HTTP Server (Express + Streamable HTTP transport) ----
+// ---- HTTP Server ----
 const app = express();
 
-app.get("/", (_req, res) => {
-  res.status(200).send("OK");
-});
+// Fast health checks (some verifiers do GET first)
+app.get("/", (_req, res) => res.status(200).send("OK"));
+app.get("/mcp", (_req, res) => res.status(200).send("OK"));
 
-// MCP Streamable HTTP endpoint (handle all methods on /mcp)
-app.all("/mcp", async (req, res) => {
+// MCP endpoint handler (accept both "/" and "/mcp")
+async function handleMcp(req, res) {
   try {
     const transport = new StreamableHTTPServerTransport({ req, res });
     await mcp.connect(transport);
   } catch (err) {
-    res.status(500).json({ error: "MCP transport error" });
+    if (!res.headersSent) res.status(500).send("MCP transport error");
   }
-});
+}
+
+app.all("/", handleMcp);
+app.all("/mcp", handleMcp);
 
 app.listen(PORT, () => {
-  // No console fluff. Keep logs clean.
+  // Intentionally quiet.
 });
