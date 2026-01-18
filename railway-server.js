@@ -9,16 +9,15 @@ import { z } from "zod";
 
 const PORT = process.env.PORT || 10000;
 
-// If you set this in Render ENV, it makes image links bulletproof.
-// Example value: https://elitemindset-mcp.onrender.com
+// Set this in Render ENV:
+// PUBLIC_BASE_URL=https://elitemindset-mcp.onrender.com
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
 
-// Resolve local path to /images folder (must exist in repo root)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const IMAGES_DIR = path.join(__dirname, "images");
 
-// These MUST match your GitHub /images filenames exactly
+// Must match GitHub exactly
 const IMAGE_FILES = [
   "overwhelmed.png",
   "ready-to-act.png",
@@ -41,37 +40,20 @@ function contentTypeFor(filename) {
   return "application/octet-stream";
 }
 
-function normalize(s) {
-  return (s || "").toString().trim().toLowerCase();
-}
-
 function pickImageFile(goal, context) {
   const t = `${goal || ""} ${context || ""}`.toLowerCase();
 
-  if (t.includes("overwhelm") || t.includes("overwhelmed") || t.includes("scattered") || t.includes("anx")) {
-    return "overwhelmed.png";
-  }
-  if (t.includes("stuck") || t.includes("procrast") || t.includes("avoid") || t.includes("blocked")) {
-    return "stuck.png";
-  }
-  if (t.includes("unclear") || t.includes("confus") || t.includes("direction") || t.includes("decision") || t.includes("too many ideas")) {
-    return "unclear-direction.png";
-  }
+  if (/(overwhelm|overwhelmed|scattered|spinning|swamped|frazzled|burned out|anx)/.test(t)) return "overwhelmed.png";
+  if (/(stuck|procrast|avoid|blocked|freeze|cant start|can't start)/.test(t)) return "stuck.png";
+  if (/(unclear|confus|direction|decision|too many ideas|priority|options)/.test(t)) return "unclear-direction.png";
   return "ready-to-act.png";
 }
 
-function shortPlan(file) {
-  // Keep it visceral and short
-  if (file === "overwhelmed.png") {
-    return "Set 10 minutes. Write the ONE thing creating the most mental noise. Then do a 2-minute starter on it.";
-  }
-  if (file === "stuck.png") {
-    return "Set 8 minutes. Choose a 2-minute starter action. Do it once. Stop. Momentum unlocked.";
-  }
-  if (file === "unclear-direction.png") {
-    return "List 3 options (titles only). Circle the one you can prove in 24 hours. Define the first deliverable in 1 sentence.";
-  }
-  return "Pick ONE outcome for today. Do the first 15-minute chunk. Then stop and reassess.";
+function microAction(file) {
+  if (file === "overwhelmed.png") return "10 min: write the ONE loudest pressure. Then do a 2-min starter (open doc + title).";
+  if (file === "stuck.png") return "8 min: pick a 2-min starter action. Do it once. Stop on purpose.";
+  if (file === "unclear-direction.png") return "12 min: list 3 options (titles only). Circle fastest proof in 24h. Write first deliverable in 1 sentence.";
+  return "15 min: pick ONE outcome for today. Do the first tiny chunk. Stop + reassess.";
 }
 
 async function tryServeImage(req, res) {
@@ -108,29 +90,27 @@ async function tryServeImage(req, res) {
 function createEliteMindsetServer(req) {
   const server = new McpServer({
     name: "elitemindset-mcp",
-    version: "1.5.0",
+    version: "1.6.0",
   });
 
   server.tool(
     "next_best_step",
-    "Return ONE time-boxed action (5–15 minutes). Keep it short, direct, and practical. Include one image using markdown.",
+    "Return a STRICT 3-line answer. No fluff. No extra explanations. Always include the image first. The assistant must output the tool text verbatim.",
     {
       goal: z.string().optional(),
       context: z.string().optional(),
     },
     async ({ goal, context }) => {
-      const g = (goal || "").trim();
-      const c = (context || "").trim();
-
-      const file = pickImageFile(g, c);
+      const file = pickImageFile(goal, context);
       const imgUrl = `${getBaseUrl(req)}/images/${file}`;
 
+      // Image first + plain URL fallback
       const text =
-        `**Next step (under 15 min):** ${shortPlan(file)}\n\n` +
-        `**Reply with:** DONE — (what you did)\n\n` +
-        `![EliteMindset](${imgUrl})`;
+        `![EliteMindset](${imgUrl})\n` +
+        `NEXT: ${microAction(file)}\n` +
+        `REPLY: DONE — (what you did)\n` +
+        `URL: ${imgUrl}`;
 
-      // IMPORTANT: Put the image in text as markdown so ChatGPT actually renders it.
       return { content: [{ type: "text", text }] };
     }
   );
@@ -157,7 +137,7 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // Serve images from /images folder
+  // Serve images
   const served = await tryServeImage(req, res);
   if (served) return;
 
@@ -182,12 +162,10 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // Fallback
   res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
   res.end("Not found");
 });
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`EliteMindset MCP listening on port ${PORT}`);
-  if (!PUBLIC_BASE_URL) console.log("Tip: set PUBLIC_BASE_URL in Render for stable image URLs.");
 });
