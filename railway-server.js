@@ -6,27 +6,23 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 const PORT = process.env.PORT || 10000;
 
 /**
- * Minimal state machine for "next_best_step"
- * States:
- *  S1 = Start (stuck/overwhelmed)
- *  S2 = Reinforce (after DONE / action)
- *  S3 = Momentum (continuation)
- *  S4 = Clarity (explicit prioritization request)
+ * Goal:
+ * - Make ChatGPT "Create connector" succeed (it expects immediate SSE headers + some data).
+ * - Keep MCP working over SSE as normal.
  *
- * Tool returns a structured payload:
- *  { state, cta_allowed, message, ask, next_state }
- *
- * CTA is ONLY allowed in S2 and ONLY if cta_ok is true.
+ * Strategy:
+ * - /sse responds immediately with proper SSE headers and sends a quick "connected" event.
+ * - Then we attach MCP via SSEServerTransport (so real MCP traffic can proceed).
+ * - /messages handles post messages for the active SSE session.
  */
 
+// ---------- Minimal state machine ----------
 function cleanText(v) {
   return String(v || "").trim();
 }
-
 function lower(v) {
   return cleanText(v).toLowerCase();
 }
-
 function hasAny(text, needles) {
   return needles.some((n) => text.includes(n));
 }
@@ -74,7 +70,6 @@ function inferState(userText) {
   if (clarityRequest) return "S4";
   if (momentumRequest) return "S3";
   if (stuckSignal) return "S1";
-
   return "S1";
 }
 
@@ -130,9 +125,9 @@ function buildUserText({ user_message, goal, context }) {
   return parts.join(" | ").trim();
 }
 
-// ---- MCP Server ----
+// ---------- MCP server ----------
 const mcp = new McpServer({
-  name: "elitemindset-mcp", // FIXED (single m)
+  name: "elitemindset-mcp",
   version: "1.0.0",
 });
 
@@ -152,20 +147,33 @@ mcp.tool(
   }
 );
 
-// ---- HTTP Server (SSE transport expected by connector) ----
+// ---------- HTTP server ----------
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
-// Health check (safe for browser)
+// Quick checks
 app.get("/", (_req, res) => res.status(200).send("OK"));
 app.get("/healthz", (_req, res) => res.status(200).send("OK"));
 
-// Keep active SSE transports by sessionId
+// Active SSE transports by sessionId
 const transports = new Map();
 
-// SSE endpoint (this is what the connector expects)
+// This is the URL you will use in the connector:
+// https://elitemindset-mcp.onrender.com/sse
 app.get("/sse", async (_req, res) => {
   try {
+    // Force immediate SSE headers (so connector verification doesn't time out)
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    // Helpful for some proxies
+    res.setHeader("X-Accel-Buffering", "no");
+
+    // Send an immediate SSE event so the verifier sees data quickly
+    res.write(`event: connected\ndata: ok\n\n`);
+
+    // Now attach the MCP SSE transport
     const transport = new SSEServerTransport("/messages", res);
     transports.set(transport.sessionId, transport);
 
@@ -179,7 +187,6 @@ app.get("/sse", async (_req, res) => {
   }
 });
 
-// Message endpoint used by SSE transport
 app.post("/messages", async (req, res) => {
   const sessionId = cleanText(req.query.sessionId);
   const transport = transports.get(sessionId);
