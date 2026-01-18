@@ -1,171 +1,188 @@
-import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
+import express from "express";
+import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z } from "zod";
 
 const PORT = process.env.PORT || 10000;
 
-// Set this in Render ENV:
-// PUBLIC_BASE_URL=https://elitemindset-mcp.onrender.com
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+/**
+ * Minimal state machine for "next_best_step"
+ * States:
+ *  S1 = Start (stuck/overwhelmed)
+ *  S2 = Reinforce (after DONE / action)
+ *  S3 = Momentum (continuation)
+ *  S4 = Clarity (explicit prioritization request)
+ *
+ * Tool returns a structured payload:
+ *  { state, cta_allowed, message, ask, next_state }
+ *
+ * Notes:
+ * - We infer state from the user text (stateless, no DB).
+ * - CTA is ONLY allowed in S2 and ONLY if cta_ok is true.
+ */
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const IMAGES_DIR = path.join(__dirname, "images");
-
-// Must match GitHub exactly
-const IMAGE_FILES = [
-  "overwhelmed.png",
-  "ready-to-act.png",
-  "stuck.png",
-  "unclear-direction.png",
-];
-
-function getBaseUrl(req) {
-  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
-  const proto = (req.headers["x-forwarded-proto"] || "https").toString();
-  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString();
-  return `${proto}://${host}`;
+function cleanText(v) {
+  return String(v || "").trim();
 }
 
-function contentTypeFor(filename) {
-  const f = filename.toLowerCase();
-  if (f.endsWith(".png")) return "image/png";
-  if (f.endsWith(".jpg") || f.endsWith(".jpeg")) return "image/jpeg";
-  if (f.endsWith(".webp")) return "image/webp";
-  return "application/octet-stream";
+function lower(v) {
+  return cleanText(v).toLowerCase();
 }
 
-function pickImageFile(goal, context) {
-  const t = `${goal || ""} ${context || ""}`.toLowerCase();
-
-  if (/(overwhelm|overwhelmed|scattered|spinning|swamped|frazzled|burned out|anx)/.test(t)) return "overwhelmed.png";
-  if (/(stuck|procrast|avoid|blocked|freeze|cant start|can't start)/.test(t)) return "stuck.png";
-  if (/(unclear|confus|direction|decision|too many ideas|priority|options)/.test(t)) return "unclear-direction.png";
-  return "ready-to-act.png";
+function hasAny(text, needles) {
+  return needles.some((n) => text.includes(n));
 }
 
-function microAction(file) {
-  if (file === "overwhelmed.png") return "10 min: write the ONE loudest pressure. Then do a 2-min starter (open doc + title).";
-  if (file === "stuck.png") return "8 min: pick a 2-min starter action. Do it once. Stop on purpose.";
-  if (file === "unclear-direction.png") return "12 min: list 3 options (titles only). Circle fastest proof in 24h. Write first deliverable in 1 sentence.";
-  return "15 min: pick ONE outcome for today. Do the first tiny chunk. Stop + reassess.";
+function inferState(userText) {
+  const t = lower(userText);
+
+  const doneSignal =
+    /\bdone\b/.test(t) ||
+    hasAny(t, ["i did", "i wrote", "i opened", "i sent", "i renamed", "finished", "completed"]);
+
+  const clarityRequest =
+    hasAny(t, [
+      "what should i focus",
+      "what do i focus",
+      "help me decide",
+      "which should i",
+      "which one should i",
+      "i need clarity",
+      "prioritize",
+      "priority",
+      "what's the plan",
+      "what is the plan",
+    ]);
+
+  const momentumRequest =
+    hasAny(t, ["what next", "next step", "keep going", "continue", "now what"]);
+
+  const stuckSignal =
+    hasAny(t, [
+      "overwhelmed",
+      "overwhelm",
+      "stuck",
+      "procrast",
+      "spinning",
+      "confus",
+      "too many",
+      "scattered",
+      "paraly",
+      "can't start",
+      "cannot start",
+      "don't know where to start",
+      "dont know where to start",
+      "no clarity",
+    ]);
+
+  if (doneSignal) return "S2";
+  if (clarityRequest) return "S4";
+  if (momentumRequest) return "S3";
+  if (stuckSignal) return "S1";
+
+  // Default: if tool was called, assume they’re seeking movement (S1).
+  return "S1";
 }
 
-async function tryServeImage(req, res) {
-  if (req.method !== "GET" || !req.url) return false;
-
-  const url = new URL(req.url, "http://localhost");
-  if (!url.pathname.startsWith("/images/")) return false;
-
-  const requested = url.pathname.replace("/images/", "");
-  const safeName = path.basename(requested);
-
-  if (!IMAGE_FILES.includes(safeName)) {
-    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("Not found");
-    return true;
+function responseForState(state, { ctaOk }) {
+  // Razor-sharp minimal responses (no fluff, no long lists).
+  if (state === "S1") {
+    return {
+      state: "S1",
+      cta_allowed: false,
+      next_state: "S2",
+      ask: "Reply: DONE — (what you did)",
+      message:
+        "You’re not stuck. You’re overloaded.\n\nWe’re not fixing everything.\nWe’re just starting.\n\nDo this:\nOpen the thing you’ve been avoiding.\nWrite one sentence.\nStop.\n\nDon’t make it good.\n\nWhen you’re done, reply:\nDONE — (what you did)",
+    };
   }
 
-  try {
-    const filePath = path.join(IMAGES_DIR, safeName);
-    const buf = await readFile(filePath);
-    res.writeHead(200, {
-      "Content-Type": contentTypeFor(safeName),
-      "Cache-Control": "public, max-age=86400",
-    });
-    res.end(buf);
-    return true;
-  } catch {
-    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("Not found");
-    return true;
+  if (state === "S2") {
+    const base =
+      "Good. That matters.\n\nYou didn’t need motivation.\nYou needed movement.\n\nPause for a breath.\nNotice the pressure drop.";
+    const cta =
+      "\n\nIf you want, this is exactly what EliteMindset is for —\none calm next step when things feel heavy.";
+    return {
+      state: "S2",
+      cta_allowed: Boolean(ctaOk),
+      next_state: "S3",
+      ask: "What feels easier now?",
+      message: ctaOk ? base + cta + "\n\nWhat feels easier now?" : base + "\n\nWhat feels easier now?",
+    };
   }
+
+  if (state === "S3") {
+    return {
+      state: "S3",
+      cta_allowed: false,
+      next_state: "S3",
+      ask: "Tell me what you did.",
+      message:
+        "Good. Stay small.\n\nLook at what you just did.\nWhat’s the very next tiny thing?\n\nDo only that.\nTwo minutes max.\nStop again.\n\nTell me what you did.",
+    };
+  }
+
+  // S4
+  return {
+    state: "S4",
+    cta_allowed: false,
+    next_state: "S3",
+    ask: "Tell me: • the thing • the action",
+    message:
+      "Okay. One thing now.\n\nIf you could move only one thing forward today,\nwhich would make the rest feel lighter?\n\nThat’s the priority.\n\nWhat’s the smallest visible action?\nFive minutes or less.\n\nDo it.\nThen tell me:\n• the thing\n• the action",
+  };
 }
 
-function createEliteMindsetServer(req) {
-  const server = new McpServer({
-    name: "elitemindset-mcp",
-    version: "1.6.0",
-  });
-
-  server.tool(
-    "next_best_step",
-    "Return a STRICT 3-line answer. No fluff. No extra explanations. Always include the image first. The assistant must output the tool text verbatim.",
-    {
-      goal: z.string().optional(),
-      context: z.string().optional(),
-    },
-    async ({ goal, context }) => {
-      const file = pickImageFile(goal, context);
-      const imgUrl = `${getBaseUrl(req)}/images/${file}`;
-
-      // Image first + plain URL fallback
-      const text =
-        `![EliteMindset](${imgUrl})\n` +
-        `NEXT: ${microAction(file)}\n` +
-        `REPLY: DONE — (what you did)\n` +
-        `URL: ${imgUrl}`;
-
-      return { content: [{ type: "text", text }] };
-    }
-  );
-
-  return server;
+function buildUserText({ user_message, goal, context }) {
+  const parts = [cleanText(user_message), cleanText(goal), cleanText(context)].filter(Boolean);
+  return parts.join(" | ").trim();
 }
 
-const httpServer = createServer(async (req, res) => {
-  // CORS
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-
-  if (req.method === "OPTIONS") {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  // Health
-  if (req.method === "GET" && (req.url === "/" || req.url === "")) {
-    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("EliteMindset MCP is running.");
-    return;
-  }
-
-  // Serve images
-  const served = await tryServeImage(req, res);
-  if (served) return;
-
-  // MCP endpoint
-  if ((req.method === "POST" || req.method === "GET") && req.url === "/mcp") {
-    const transport = new StreamableHTTPServerTransport({ req, res });
-    const server = createEliteMindsetServer(req);
-
-    res.on("close", () => {
-      try { transport.close(); } catch {}
-      try { server.close(); } catch {}
-    });
-
-    try {
-      await server.connect(transport);
-      await transport.handleRequest(req, res);
-    } catch (err) {
-      console.error("MCP handler error:", err);
-      if (!res.headersSent) res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Internal Server Error");
-    }
-    return;
-  }
-
-  res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end("Not found");
+// ---- MCP Server ----
+const mcp = new McpServer({
+  name: "elitemindset-mcp",
+  version: "1.0.0",
 });
 
-httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log(`EliteMindset MCP listening on port ${PORT}`);
+mcp.tool(
+  "next_best_step",
+  "Use when a user feels stuck, overwhelmed, procrastinating, or unsure what to do next. Returns one calm, minimal next step using a simple state machine (S1–S4).",
+  {
+    // Backwards-compatible fields (keep these)
+    goal: z.string().optional(),
+    context: z.string().optional(),
+
+    // Recommended fields for deterministic state + CTA gating
+    user_message: z.string().optional(),
+    cta_ok: z.boolean().optional(), // only allow CTA when true (typically after 3–4 user replies + action)
+  },
+  async ({ goal, context, user_message, cta_ok }) => {
+    const userText = buildUserText({ user_message, goal, context });
+    const state = inferState(userText);
+    const payload = responseForState(state, { ctaOk: Boolean(cta_ok) });
+
+    // Structured, reviewer-friendly payload:
+    return payload;
+  }
+);
+
+// ---- HTTP Server (Express + Streamable HTTP transport) ----
+const app = express();
+
+app.get("/", (_req, res) => {
+  res.status(200).send("OK");
+});
+
+// MCP Streamable HTTP endpoint (handle all methods on /mcp)
+app.all("/mcp", async (req, res) => {
+  try {
+    const transport = new StreamableHTTPServerTransport({ req, res });
+    await mcp.connect(transport);
+  } catch (err) {
+    res.status(500).json({ error: "MCP transport error" });
+  }
+});
+
+app.listen(PORT, () => {
+  // No console fluff. Keep logs clean.
 });
