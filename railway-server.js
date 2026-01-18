@@ -132,7 +132,7 @@ function buildUserText({ user_message, goal, context }) {
 
 // ---- MCP Server ----
 const mcp = new McpServer({
-  name: "elitemmindset-mcp",
+  name: "elitemindset-mcp", // FIXED (single m)
   version: "1.0.0",
 });
 
@@ -164,7 +164,7 @@ app.get("/healthz", (_req, res) => res.status(200).send("OK"));
 const transports = new Map();
 
 // SSE endpoint (this is what the connector expects)
-app.get("/sse", async (req, res) => {
+app.get("/sse", async (_req, res) => {
   try {
     const transport = new SSEServerTransport("/messages", res);
     transports.set(transport.sessionId, transport);
