@@ -4,7 +4,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import path from "path";
 import { fileURLToPath } from "url";
-import fs from "fs/promises";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -94,7 +93,7 @@ const stateData = {
     ask: "Reply: DONE — (what you did)",
     cta_allowed: false,
     next_state: "S2",
-    image: "overwhelmed",
+    image: "overwhelmed.png",
   },
   S2: {
     message:
@@ -102,7 +101,7 @@ const stateData = {
     ask: "Reply: DONE — (what you did)",
     cta_allowed: false,
     next_state: "S3",
-    image: "stuck",
+    image: "stuck.png",
   },
   S3: {
     message:
@@ -110,7 +109,7 @@ const stateData = {
     ask: "Reply when you've done it",
     cta_allowed: false,
     next_state: "S3",
-    image: "ready-to-act",
+    image: "ready-to-act.png",
   },
   S4: {
     message:
@@ -118,7 +117,7 @@ const stateData = {
     ask: "List your top 3 concerns",
     cta_allowed: true,
     next_state: "S1",
-    image: "unclear-direction",
+    image: "unclear-direction.png",
   },
 };
 
@@ -137,18 +136,6 @@ app.get("/healthz", (req, res) => {
 
 // Serve static images
 app.use("/images", express.static(path.join(__dirname, "images")));
-
-// Helper to read images as base64
-async function getImageBase64(imageName) {
-  try {
-    const imagePath = path.join(__dirname, "images", `${imageName}.png`);
-    const buffer = await fs.readFile(imagePath);
-    return buffer.toString("base64");
-  } catch (error) {
-    console.error(`Error reading image ${imageName}:`, error);
-    return null;
-  }
-}
 
 // Root path handler - ChatGPT looks here first
 app.get("/", (req, res) => {
@@ -188,31 +175,7 @@ app.get("/sse", async (req, res) => {
       version: "1.0.0",
     });
 
-    // Register MCP Resources for images (base64 embedded)
-    const imageNames = ["overwhelmed", "stuck", "ready-to-act", "unclear-direction"];
-    
-    for (const imageName of imageNames) {
-      mcp.resource({
-        uri: `image://${imageName}`,
-        name: imageName,
-        mimeType: "image/png",
-        description: `${imageName} state visualization`,
-      }, async () => {
-        const base64Data = await getImageBase64(imageName);
-        if (!base64Data) {
-          throw new Error(`Image ${imageName} not found`);
-        }
-        return {
-          contents: [{
-            uri: `image://${imageName}`,
-            mimeType: "image/png",
-            blob: base64Data,
-          }],
-        };
-      });
-    }
-
-    // Define the single tool
+    // Define the single tool (NO MCP Resources to avoid SDK errors)
     mcp.tool(
       {
         name: "next_best_step",
@@ -239,7 +202,7 @@ app.get("/sse", async (req, res) => {
                 {
                   state,
                   message: data.message,
-                  image_resource: `image://${data.image}`,
+                  image_url: `${BASE_URL}/images/${data.image}`,
                   ask: data.ask,
                   cta_allowed: data.cta_allowed,
                   next_state: data.next_state,
@@ -332,8 +295,8 @@ app.listen(PORT, () => {
   console.log(`✓ EliteMindset MCP server running on port ${PORT}`);
   console.log(`✓ BASE_URL: ${baseInfo}`);
   console.log(`✓ Static images: /images/*`);
-  console.log(`✓ MCP Resources: 4 image resources registered`);
   console.log(`✓ Health check: /healthz`);
+  console.log(`✓ Root path: / (redirects to /sse for ChatGPT)`);
   console.log(`✓ MCP alias: /mcp`);
   console.log(`✓ SSE endpoint: /sse`);
   console.log(`✓ IMMEDIATE handshake: endpoint event sent within 100ms`);
