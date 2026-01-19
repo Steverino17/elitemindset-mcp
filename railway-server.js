@@ -176,8 +176,8 @@ app.get("/sse", async (req, res) => {
 
     // Define tool
     mcp.tool(
+      "next_best_step",
       {
-        name: "next_best_step",
         description:
           "Help user overcome procrastination and analysis-paralysis by identifying the smallest immediate next action. Use when user expresses being stuck, overwhelmed, unclear, or asks for direction.",
         inputSchema: z.object({
@@ -186,7 +186,7 @@ app.get("/sse", async (req, res) => {
             .describe("What the user just said (their concern, question, or confirmation of completion)"),
         }),
       },
-      async ({ user_input }, { _meta }) => {
+      async ({ user_input }) => {
         // Increment interaction count
         const currentCount = interactionCounts.get(sessionId) + 1;
         interactionCounts.set(sessionId, currentCount);
