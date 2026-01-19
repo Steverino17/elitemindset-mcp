@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs/promises";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,20 +84,19 @@ function getBaseUrlFromReq(req) {
   return `${proto}://${host}`.replace(/\/+$/, "");
 }
 
-// Map states to images
-function getImageForState(state, baseUrl) {
+// Map states to image resource URIs
+function getImageResourceForState(state) {
   const imageMap = {
-    S1: "overwhelmed.png",
-    S2: "stuck.png",
-    S3: "ready-to-act.png",
-    S4: "unclear-direction.png",
+    S1: "image://overwhelmed",
+    S2: "image://stuck",
+    S3: "image://ready-to-act",
+    S4: "image://unclear-direction",
   };
-  const file = imageMap[state] || imageMap.S1;
-  return `${baseUrl}/images/${file}`;
+  return imageMap[state] || imageMap.S1;
 }
 
-function responseForState(state, { ctaOk, baseUrl }) {
-  const imageUrl = getImageForState(state, baseUrl);
+function responseForState(state, { ctaOk }) {
+  const imageResource = getImageResourceForState(state);
 
   if (state === "S1") {
     return {
@@ -104,7 +104,7 @@ function responseForState(state, { ctaOk, baseUrl }) {
       cta_allowed: false,
       next_state: "S2",
       ask: "Reply: DONE — (what you did)",
-      image_url: imageUrl,
+      image_resource: imageResource,
       message:
         "You're not stuck. You're overloaded.\n\nWe're not fixing everything.\nWe're just starting.\n\nDo this:\nOpen the thing you've been avoiding.\nWrite one sentence.\nStop.\n\nDon't make it good.\n\nWhen you're done, reply:\nDONE — (what you did)",
     };
@@ -120,7 +120,7 @@ function responseForState(state, { ctaOk, baseUrl }) {
       cta_allowed: Boolean(ctaOk),
       next_state: "S3",
       ask: "What feels easier now?",
-      image_url: imageUrl,
+      image_resource: imageResource,
       message: ctaOk ? base + cta + "\n\nWhat feels easier now?" : base + "\n\nWhat feels easier now?",
     };
   }
@@ -131,7 +131,7 @@ function responseForState(state, { ctaOk, baseUrl }) {
       cta_allowed: false,
       next_state: "S3",
       ask: "Tell me what you did.",
-      image_url: imageUrl,
+      image_resource: imageResource,
       message:
         "Good. Stay small.\n\nLook at what you just did.\nWhat's the very next tiny thing?\n\nDo only that.\nTwo minutes max.\nStop again.\n\nTell me what you did.",
     };
@@ -142,7 +142,7 @@ function responseForState(state, { ctaOk, baseUrl }) {
     cta_allowed: false,
     next_state: "S3",
     ask: "Tell me: • the thing • the action",
-    image_url: imageUrl,
+    image_resource: imageResource,
     message:
       "Okay. One thing now.\n\nIf you could move only one thing forward today,\nwhich would make the rest feel lighter?\n\nThat's the priority.\n\nWhat's the smallest visible action?\nFive minutes or less.\n\nDo it.\nThen tell me:\n• the thing\n• the action",
   };
@@ -172,6 +172,66 @@ function updateCachedBaseUrl(newUrl) {
   }
 }
 
+// ✨ NEW: Register MCP Resources for images
+// These allow ChatGPT to fetch and display images inline
+
+mcp.resource(
+  "image://overwhelmed",
+  "Motivational image for overwhelmed state - desk covered in sticky notes and tasks",
+  "image/png",
+  async () => {
+    const imagePath = path.join(__dirname, "images", "overwhelmed.png");
+    const imageBuffer = await fs.readFile(imagePath);
+    return {
+      contents: imageBuffer.toString("base64"),
+      mimeType: "image/png",
+    };
+  }
+);
+
+mcp.resource(
+  "image://stuck",
+  "Motivational image for stuck/completed state - person in ice cave looking at light",
+  "image/png",
+  async () => {
+    const imagePath = path.join(__dirname, "images", "stuck.png");
+    const imageBuffer = await fs.readFile(imagePath);
+    return {
+      contents: imageBuffer.toString("base64"),
+      mimeType: "image/png",
+    };
+  }
+);
+
+mcp.resource(
+  "image://ready-to-act",
+  "Motivational image for ready to act state - open road at sunrise",
+  "image/png",
+  async () => {
+    const imagePath = path.join(__dirname, "images", "ready-to-act.png");
+    const imageBuffer = await fs.readFile(imagePath);
+    return {
+      contents: imageBuffer.toString("base64"),
+      mimeType: "image/png",
+    };
+  }
+);
+
+mcp.resource(
+  "image://unclear-direction",
+  "Motivational image for unclear direction state - forest path with directional signs",
+  "image/png",
+  async () => {
+    const imagePath = path.join(__dirname, "images", "unclear-direction.png");
+    const imageBuffer = await fs.readFile(imagePath);
+    return {
+      contents: imageBuffer.toString("base64"),
+      mimeType: "image/png",
+    };
+  }
+);
+
+// Register the tool
 mcp.tool(
   "next_best_step",
   "Use when a user feels stuck, overwhelmed, procrastinating, or unsure what to do next. Returns one calm, minimal next step using a simple state machine (S1—S4) with an accompanying motivational image.",
@@ -182,14 +242,9 @@ mcp.tool(
     cta_ok: z.boolean().optional(),
   },
   async ({ goal, context, user_message, cta_ok }) => {
-    const baseUrl = 
-      cachedBaseUrl || 
-      cleanText(process.env.BASE_URL) || 
-      `http://localhost:${PORT}`;
-    
     const userText = buildUserText({ user_message, goal, context });
     const state = inferState(userText);
-    return responseForState(state, { ctaOk: Boolean(cta_ok), baseUrl });
+    return responseForState(state, { ctaOk: Boolean(cta_ok) });
   }
 );
 
@@ -197,7 +252,7 @@ mcp.tool(
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
-// Serve static images
+// Serve static images (for fallback/direct browser access)
 app.use("/images", express.static(path.join(__dirname, "images")));
 
 app.get("/", (_req, res) => res.status(200).send("OK"));
@@ -315,6 +370,7 @@ app.listen(PORT, () => {
   console.log(`✓ EliteMindset MCP server running on port ${PORT}`);
   console.log(`✓ BASE_URL: ${baseInfo}`);
   console.log(`✓ Static images: /images/*`);
+  console.log(`✓ MCP Resources: 4 image resources registered`);
   console.log(`✓ Health check: /healthz`);
   console.log(`✓ MCP alias: /mcp`);
   console.log(`✓ SSE endpoint: /sse`);
