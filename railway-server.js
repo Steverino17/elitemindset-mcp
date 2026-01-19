@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import path from "path";
 import { fileURLToPath } from "url";
+import { readFileSync } from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -91,7 +92,6 @@ const stateData = {
     message:
       "You're not stuck. You're overloaded. Pause. Pick the ONE thing that would give you the most relief or progress. Write it down. Then reply: DONE — (what you did).",
     ask: "Reply: DONE — (what you did)",
-    cta_allowed: false,
     next_state: "S2",
     image: "overwhelmed.png",
   },
@@ -99,7 +99,6 @@ const stateData = {
     message:
       "Good. You moved. Now do ONE more small thing. Anything. A file rename. A sentence. A single email. Reply: DONE — (what you did).",
     ask: "Reply: DONE — (what you did)",
-    cta_allowed: false,
     next_state: "S3",
     image: "stuck.png",
   },
@@ -107,7 +106,6 @@ const stateData = {
     message:
       "You're building momentum. Keep it micro. What's ONE more small thing you can do in the next 60 seconds? Do it. Reply when done.",
     ask: "Reply when you've done it",
-    cta_allowed: false,
     next_state: "S3",
     image: "ready-to-act.png",
   },
@@ -115,15 +113,15 @@ const stateData = {
     message:
       "You need clarity, not motivation. List your top 3 concerns. I'll help you identify the ONE thing that matters most right now.",
     ask: "List your top 3 concerns",
-    cta_allowed: true,
     next_state: "S1",
     image: "unclear-direction.png",
   },
 };
 
-// Store MCP servers and transports per session
+// Store MCP servers, transports, and interaction counts per session
 const transports = new Map();
 const mcpServers = new Map();
+const interactionCounts = new Map(); // Track interactions per session
 
 // Express app
 const app = express();
@@ -175,7 +173,41 @@ app.get("/sse", async (req, res) => {
       version: "1.0.0",
     });
 
-    // Define the single tool (NO MCP Resources to avoid SDK errors)
+    // Read the widget HTML file
+    const widgetHtml = readFileSync(
+      path.join(__dirname, "elitemindset-widget.html"),
+      "utf8"
+    );
+
+    // Register the widget as an MCP resource
+    mcp.resource(
+      {
+        uri: "ui://widget/elitemindset.html",
+        name: "EliteMindset Clarity Widget",
+        mimeType: "text/html+skybridge",
+        description: "Visual guidance for overcoming procrastination and gaining clarity",
+      },
+      async () => ({
+        contents: [
+          {
+            uri: "ui://widget/elitemindset.html",
+            mimeType: "text/html+skybridge",
+            text: widgetHtml,
+            _meta: {
+              "openai/widgetPrefersBorder": true,
+              "openai/widgetDomain": "https://chatgpt.com",
+            },
+          },
+        ],
+      })
+    );
+
+    // Initialize interaction count for this session if not exists
+    if (!interactionCounts.has(sessionId)) {
+      interactionCounts.set(sessionId, 0);
+    }
+
+    // Define the single tool with widget output
     mcp.tool(
       {
         name: "next_best_step",
@@ -188,28 +220,36 @@ app.get("/sse", async (req, res) => {
               "What the user just said (their concern, question, or confirmation of completion)"
             ),
         }),
+        _meta: {
+          "openai/outputTemplate": "ui://widget/elitemindset.html",
+        },
       },
       async ({ user_input }) => {
+        // Increment interaction count
+        const currentCount = interactionCounts.get(sessionId) + 1;
+        interactionCounts.set(sessionId, currentCount);
+
+        // Determine if CTA should be shown (after 3 interactions)
+        const ctaAllowed = currentCount >= 3;
+
         const state = inferState(user_input);
         const data = stateData[state];
         const BASE_URL = getBaseUrlFromReq(req);
 
+        // Return structured content for the widget
         return {
+          structuredContent: {
+            state,
+            message: data.message,
+            ask: data.ask,
+            cta_allowed: ctaAllowed,
+            next_state: data.next_state,
+            interaction_count: currentCount,
+          },
           content: [
             {
               type: "text",
-              text: JSON.stringify(
-                {
-                  state,
-                  message: data.message,
-                  image_url: `${BASE_URL}/images/${data.image}`,
-                  ask: data.ask,
-                  cta_allowed: data.cta_allowed,
-                  next_state: data.next_state,
-                },
-                null,
-                2
-              ),
+              text: `${data.message}\n\n${data.ask}`,
             },
           ],
         };
@@ -238,6 +278,7 @@ app.get("/sse", async (req, res) => {
       clearInterval(keepAlive);
       transports.delete(sessionId);
       mcpServers.delete(sessionId);
+      // Keep interaction count for session resume
     });
   } catch (err) {
     console.error("SSE init error:", err);
@@ -295,9 +336,11 @@ app.listen(PORT, () => {
   console.log(`✓ EliteMindset MCP server running on port ${PORT}`);
   console.log(`✓ BASE_URL: ${baseInfo}`);
   console.log(`✓ Static images: /images/*`);
+  console.log(`✓ Widget resource: ui://widget/elitemindset.html`);
   console.log(`✓ Health check: /healthz`);
   console.log(`✓ Root path: / (redirects to /sse for ChatGPT)`);
   console.log(`✓ MCP alias: /mcp`);
   console.log(`✓ SSE endpoint: /sse`);
   console.log(`✓ IMMEDIATE handshake: endpoint event sent within 100ms`);
+  console.log(`✓ CTA displays after 3 interactions`);
 });
