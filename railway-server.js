@@ -78,244 +78,200 @@ function getBaseUrlFromReq(req) {
   const proto =
     cleanText(req.headers["x-forwarded-proto"]) ||
     (req.secure ? "https" : "http");
-  const host = cleanText(req.headers["x-forwarded-host"]) || cleanText(req.headers.host);
-
-  if (!host) return "http://localhost:" + PORT;
-  return `${proto}://${host}`.replace(/\/+$/, "");
+  const host = cleanText(req.headers["x-forwarded-host"] || req.headers.host);
+  return host ? `${proto}://${host}` : "";
 }
-
-// Map states to image resource URIs
-function getImageResourceForState(state) {
-  const imageMap = {
-    S1: "image://overwhelmed",
-    S2: "image://stuck",
-    S3: "image://ready-to-act",
-    S4: "image://unclear-direction",
-  };
-  return imageMap[state] || imageMap.S1;
-}
-
-function responseForState(state, { ctaOk }) {
-  const imageResource = getImageResourceForState(state);
-
-  if (state === "S1") {
-    return {
-      state: "S1",
-      cta_allowed: false,
-      next_state: "S2",
-      ask: "Reply: DONE — (what you did)",
-      image_resource: imageResource,
-      message:
-        "You're not stuck. You're overloaded.\n\nWe're not fixing everything.\nWe're just starting.\n\nDo this:\nOpen the thing you've been avoiding.\nWrite one sentence.\nStop.\n\nDon't make it good.\n\nWhen you're done, reply:\nDONE — (what you did)",
-    };
-  }
-
-  if (state === "S2") {
-    const base =
-      "Good. That matters.\n\nYou didn't need motivation.\nYou needed movement.\n\nPause for a breath.\nNotice the pressure drop.";
-    const cta =
-      "\n\nIf you want, this is exactly what EliteMindset is for —\none calm next step when things feel heavy.";
-    return {
-      state: "S2",
-      cta_allowed: Boolean(ctaOk),
-      next_state: "S3",
-      ask: "What feels easier now?",
-      image_resource: imageResource,
-      message: ctaOk ? base + cta + "\n\nWhat feels easier now?" : base + "\n\nWhat feels easier now?",
-    };
-  }
-
-  if (state === "S3") {
-    return {
-      state: "S3",
-      cta_allowed: false,
-      next_state: "S3",
-      ask: "Tell me what you did.",
-      image_resource: imageResource,
-      message:
-        "Good. Stay small.\n\nLook at what you just did.\nWhat's the very next tiny thing?\n\nDo only that.\nTwo minutes max.\nStop again.\n\nTell me what you did.",
-    };
-  }
-
-  return {
-    state: "S4",
-    cta_allowed: false,
-    next_state: "S3",
-    ask: "Tell me: • the thing • the action",
-    image_resource: imageResource,
-    message:
-      "Okay. One thing now.\n\nIf you could move only one thing forward today,\nwhich would make the rest feel lighter?\n\nThat's the priority.\n\nWhat's the smallest visible action?\nFive minutes or less.\n\nDo it.\nThen tell me:\n• the thing\n• the action",
-  };
-}
-
-function buildUserText({ user_message, goal, context }) {
-  const parts = [cleanText(user_message), cleanText(goal), cleanText(context)].filter(Boolean);
-  return parts.join(" | ").trim();
-}
-
-// ----------------- MCP server -----------------
-const mcp = new McpServer({
-  name: "elitemindset-mcp",
-  version: "1.0.0",
-});
-
-let cachedBaseUrl = null;
-
-function updateCachedBaseUrl(newUrl) {
-  if (!cachedBaseUrl) {
-    cachedBaseUrl = newUrl;
-    return;
-  }
-  
-  if (cachedBaseUrl.startsWith("http://") && newUrl.startsWith("https://")) {
-    cachedBaseUrl = newUrl;
-  }
-}
-
-// ✨ NEW: Register MCP Resources for images
-// These allow ChatGPT to fetch and display images inline
-
-mcp.resource(
-  "image://overwhelmed",
-  "Motivational image for overwhelmed state - desk covered in sticky notes and tasks",
-  "image/png",
-  async () => {
-    const imagePath = path.join(__dirname, "images", "overwhelmed.png");
-    const imageBuffer = await fs.readFile(imagePath);
-    return {
-      contents: imageBuffer.toString("base64"),
-      mimeType: "image/png",
-    };
-  }
-);
-
-mcp.resource(
-  "image://stuck",
-  "Motivational image for stuck/completed state - person in ice cave looking at light",
-  "image/png",
-  async () => {
-    const imagePath = path.join(__dirname, "images", "stuck.png");
-    const imageBuffer = await fs.readFile(imagePath);
-    return {
-      contents: imageBuffer.toString("base64"),
-      mimeType: "image/png",
-    };
-  }
-);
-
-mcp.resource(
-  "image://ready-to-act",
-  "Motivational image for ready to act state - open road at sunrise",
-  "image/png",
-  async () => {
-    const imagePath = path.join(__dirname, "images", "ready-to-act.png");
-    const imageBuffer = await fs.readFile(imagePath);
-    return {
-      contents: imageBuffer.toString("base64"),
-      mimeType: "image/png",
-    };
-  }
-);
-
-mcp.resource(
-  "image://unclear-direction",
-  "Motivational image for unclear direction state - forest path with directional signs",
-  "image/png",
-  async () => {
-    const imagePath = path.join(__dirname, "images", "unclear-direction.png");
-    const imageBuffer = await fs.readFile(imagePath);
-    return {
-      contents: imageBuffer.toString("base64"),
-      mimeType: "image/png",
-    };
-  }
-);
-
-// Register the tool
-mcp.tool(
-  "next_best_step",
-  "Use when a user feels stuck, overwhelmed, procrastinating, or unsure what to do next. Returns one calm, minimal next step using a simple state machine (S1—S4) with an accompanying motivational image.",
-  {
-    goal: z.string().optional(),
-    context: z.string().optional(),
-    user_message: z.string().optional(),
-    cta_ok: z.boolean().optional(),
-  },
-  async ({ goal, context, user_message, cta_ok }) => {
-    const userText = buildUserText({ user_message, goal, context });
-    const state = inferState(userText);
-    return responseForState(state, { ctaOk: Boolean(cta_ok) });
-  }
-);
-
-// ----------------- HTTP server -----------------
-const app = express();
-app.use(express.json({ limit: "1mb" }));
-
-// Serve static images (for fallback/direct browser access)
-app.use("/images", express.static(path.join(__dirname, "images")));
-
-app.get("/", (_req, res) => res.status(200).send("OK"));
-app.get("/healthz", (_req, res) => res.status(200).send("OK"));
-app.get("/mcp", (_req, res) => res.status(200).send("OK"));
-
-const transports = new Map();
 
 function getSessionId(req) {
-  const a = cleanText(req.query.sessionId);
-  const b = cleanText(req.query.session_id);
-  return a || b;
+  return cleanText(req.query.sessionId || req.query.session_id || "default");
 }
 
+// ----------------- State responses -----------------
+const stateData = {
+  S1: {
+    message:
+      "You're not stuck. You're overloaded. Pause. Pick the ONE thing that would give you the most relief or progress. Write it down. Then reply: DONE — (what you did).",
+    ask: "Reply: DONE — (what you did)",
+    cta_allowed: false,
+    next_state: "S2",
+    image: "overwhelmed",
+  },
+  S2: {
+    message:
+      "Good. You moved. Now do ONE more small thing. Anything. A file rename. A sentence. A single email. Reply: DONE — (what you did).",
+    ask: "Reply: DONE — (what you did)",
+    cta_allowed: false,
+    next_state: "S3",
+    image: "stuck",
+  },
+  S3: {
+    message:
+      "You're building momentum. Keep it micro. What's ONE more small thing you can do in the next 60 seconds? Do it. Reply when done.",
+    ask: "Reply when you've done it",
+    cta_allowed: false,
+    next_state: "S3",
+    image: "ready-to-act",
+  },
+  S4: {
+    message:
+      "You need clarity, not motivation. List your top 3 concerns. I'll help you identify the ONE thing that matters most right now.",
+    ask: "List your top 3 concerns",
+    cta_allowed: true,
+    next_state: "S1",
+    image: "unclear-direction",
+  },
+};
+
+// Store MCP servers and transports per session
+const transports = new Map();
+const mcpServers = new Map();
+
+// Express app
+const app = express();
+app.use(express.json());
+
+// Health check
+app.get("/healthz", (req, res) => {
+  res.send("OK");
+});
+
+// Serve static images
+app.use("/images", express.static(path.join(__dirname, "images")));
+
+// Helper to read images as base64
+async function getImageBase64(imageName) {
+  try {
+    const imagePath = path.join(__dirname, "images", `${imageName}.png`);
+    const buffer = await fs.readFile(imagePath);
+    return buffer.toString("base64");
+  } catch (error) {
+    console.error(`Error reading image ${imageName}:`, error);
+    return null;
+  }
+}
+
+// MCP alias endpoint
+app.get("/mcp", (req, res) => {
+  req.url = "/sse";
+  app._router.handle(req, res);
+});
+
 /**
- * GET /sse - ChatGPT-compatible SSE endpoint
- * CRITICAL: ChatGPT requires immediate response with proper SSE format
+ * GET /sse - Initialize SSE connection with IMMEDIATE handshake
  */
 app.get("/sse", async (req, res) => {
-  let keepAlive = null;
+  const sessionId = getSessionId(req);
+
+  // Set SSE headers immediately
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+
+  // CRITICAL: Send endpoint event IMMEDIATELY (within 100ms)
+  res.write(`event: endpoint\n`);
+  res.write(`data: /sse\n\n`);
+  res.flushHeaders();
+
+  console.log(`✓ SSE connected: session=${sessionId}`);
 
   try {
-    // CRITICAL: Set headers IMMEDIATELY before any async operations
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      "Connection": "keep-alive",
-      "X-Accel-Buffering": "no",
+    // Create MCP server for this session
+    const mcp = new McpServer({
+      name: "elitemindset-clarity",
+      version: "1.0.0",
     });
 
-    // CRITICAL: Flush headers immediately
-    res.flushHeaders();
+    // Register MCP Resources for images (base64 embedded)
+    const imageNames = ["overwhelmed", "stuck", "ready-to-act", "unclear-direction"];
+    
+    for (const imageName of imageNames) {
+      mcp.resource({
+        uri: `image://${imageName}`,
+        name: imageName,
+        mimeType: "image/png",
+        description: `${imageName} state visualization`,
+      }, async () => {
+        const base64Data = await getImageBase64(imageName);
+        if (!base64Data) {
+          throw new Error(`Image ${imageName} not found`);
+        }
+        return {
+          contents: [{
+            uri: `image://${imageName}`,
+            mimeType: "image/png",
+            blob: base64Data,
+          }],
+        };
+      });
+    }
 
-    // Send immediate SSE event - ChatGPT needs this within 5 seconds
-    res.write("event: endpoint\n");
-    res.write(`data: /sse\n\n`);
+    // Define the single tool
+    mcp.tool(
+      {
+        name: "next_best_step",
+        description:
+          "Help user overcome procrastination and analysis-paralysis by identifying the smallest immediate next action. Use when user expresses being stuck, overwhelmed, unclear, or asks for direction.",
+        inputSchema: z.object({
+          user_input: z
+            .string()
+            .describe(
+              "What the user just said (their concern, question, or confirmation of completion)"
+            ),
+        }),
+      },
+      async ({ user_input }) => {
+        const state = inferState(user_input);
+        const data = stateData[state];
+        const BASE_URL = getBaseUrlFromReq(req);
 
-    // SSE keepalive every 15 seconds
-    keepAlive = setInterval(() => {
-      try {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  state,
+                  message: data.message,
+                  image_resource: `image://${data.image}`,
+                  ask: data.ask,
+                  cta_allowed: data.cta_allowed,
+                  next_state: data.next_state,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+
+    // Create SSE transport with this response
+    const transport = new SSEServerTransport("/sse", res);
+    await mcp.connect(transport);
+
+    transports.set(sessionId, transport);
+    mcpServers.set(sessionId, mcp);
+
+    // Keepalive every 15 seconds
+    const keepAlive = setInterval(() => {
+      if (!res.writableEnded) {
         res.write(": ping\n\n");
-      } catch (err) {
-        // Connection closed
+      } else {
+        clearInterval(keepAlive);
       }
     }, 15000);
 
-    // Initialize MCP transport
-    const transport = new SSEServerTransport("/sse", res);
-    transports.set(transport.sessionId, transport);
-
-    // Update base URL
-    const inferredUrl = getBaseUrlFromReq(req);
-    updateCachedBaseUrl(inferredUrl);
-
-    res.on("close", () => {
-      if (keepAlive) clearInterval(keepAlive);
-      transports.delete(transport.sessionId);
+    // Cleanup on disconnect
+    req.on("close", () => {
+      console.log(`✗ SSE disconnected: session=${sessionId}`);
+      clearInterval(keepAlive);
+      transports.delete(sessionId);
+      mcpServers.delete(sessionId);
     });
-
-    await mcp.connect(transport);
   } catch (err) {
-    console.error("SSE connection error:", err);
-    if (keepAlive) clearInterval(keepAlive);
+    console.error("SSE init error:", err);
     if (!res.headersSent) {
       res.status(500).send("SSE init error");
     }
@@ -374,4 +330,5 @@ app.listen(PORT, () => {
   console.log(`✓ Health check: /healthz`);
   console.log(`✓ MCP alias: /mcp`);
   console.log(`✓ SSE endpoint: /sse`);
+  console.log(`✓ IMMEDIATE handshake: endpoint event sent within 100ms`);
 });
