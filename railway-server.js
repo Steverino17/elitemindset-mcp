@@ -183,7 +183,7 @@ app.get("/sse", async (req, res) => {
     mcp.resource(
       {
         uri: "ui://widget/elitemindset.html",
-        name: "EliteMindset Clarity Widget",
+        name: "elitemindset-clarity-widget",
         mimeType: "text/html+skybridge",
         description: "Visual guidance for overcoming procrastination and gaining clarity",
       },
