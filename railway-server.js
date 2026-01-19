@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 10000;
 
-// ----------------- Helper functions -----------------
+// Helper functions
 function cleanText(v) {
   return String(v || "").trim();
 }
@@ -84,7 +84,7 @@ function getSessionId(req) {
   return cleanText(req.query.sessionId || req.query.session_id || "default");
 }
 
-// ----------------- State data -----------------
+// State data
 const stateData = {
   S1: {
     message:
@@ -116,46 +116,40 @@ const stateData = {
   },
 };
 
-// ----------------- Session storage -----------------
+// Session storage
 const transports = new Map();
 const mcpServers = new Map();
 const interactionCounts = new Map();
 
-// ----------------- Express app -----------------
+// Express app
 const app = express();
 app.use(express.json());
 
-// Health check
 app.get("/healthz", (req, res) => {
   res.send("OK");
 });
 
-// Serve static images
 app.use("/images", express.static(path.join(__dirname, "images")));
 
-// Root path handler
 app.get("/", (req, res) => {
   req.url = "/sse";
   app._router.handle(req, res);
 });
 
-// MCP alias
 app.get("/mcp", (req, res) => {
   req.url = "/sse";
   app._router.handle(req, res);
 });
 
-// ----------------- SSE Connection -----------------
+// SSE Connection
 app.get("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
 
-  // Set SSE headers immediately
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
 
-  // Send endpoint event immediately
   res.write(`event: endpoint\n`);
   res.write(`data: /sse\n\n`);
   res.flushHeaders();
@@ -163,50 +157,42 @@ app.get("/sse", async (req, res) => {
   console.log(`✓ SSE connected: session=${sessionId}`);
 
   try {
-    // Create MCP server
     const mcp = new McpServer({
       name: "elitemindset-clarity",
       version: "1.0.0",
     });
 
-    // Initialize interaction count
     if (!interactionCounts.has(sessionId)) {
       interactionCounts.set(sessionId, 0);
     }
 
-    // Define tool
-    mcp.tool(
+    // Register tool - EXACT format from official SDK docs
+    mcp.registerTool(
       "next_best_step",
       {
         description:
           "Help user overcome procrastination and analysis-paralysis by identifying the smallest immediate next action. Use when user expresses being stuck, overwhelmed, unclear, or asks for direction.",
-        inputSchema: z.object({
+        inputSchema: {
           user_input: z
             .string()
             .describe("What the user just said (their concern, question, or confirmation of completion)"),
-        }),
+        },
       },
       async ({ user_input }) => {
-        // Increment interaction count
         const currentCount = interactionCounts.get(sessionId) + 1;
         interactionCounts.set(sessionId, currentCount);
 
-        // Determine if CTA should be shown
         const ctaAllowed = currentCount >= 3;
-
         const state = inferState(user_input);
         const data = stateData[state];
         const BASE_URL = getBaseUrlFromReq(req);
 
-        // Build response message
         let responseMessage = `${data.message}\n\n${data.ask}`;
         
-        // Add CTA if allowed
         if (ctaAllowed) {
           responseMessage += `\n\n━━━━━━━━━━━━━━━━━━━━━━\nWhen you're ready, continue at EliteMindset.ai`;
         }
 
-        // Add image reference
         responseMessage += `\n\n[Image: ${BASE_URL}/images/${data.image}]`;
 
         return {
@@ -220,14 +206,12 @@ app.get("/sse", async (req, res) => {
       }
     );
 
-    // Create transport
     const transport = new SSEServerTransport("/sse", res);
     await mcp.connect(transport);
 
     transports.set(sessionId, transport);
     mcpServers.set(sessionId, mcp);
 
-    // Keepalive
     const keepAlive = setInterval(() => {
       if (!res.writableEnded) {
         res.write(": ping\n\n");
@@ -236,7 +220,6 @@ app.get("/sse", async (req, res) => {
       }
     }, 15000);
 
-    // Cleanup
     req.on("close", () => {
       console.log(`✗ SSE disconnected: session=${sessionId}`);
       clearInterval(keepAlive);
@@ -251,7 +234,6 @@ app.get("/sse", async (req, res) => {
   }
 });
 
-// ----------------- Message handlers -----------------
 app.post("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
   const transport = transports.get(sessionId);
@@ -288,16 +270,13 @@ app.post("/messages", async (req, res) => {
   }
 });
 
-// ----------------- Start server -----------------
 app.listen(PORT, () => {
-  const baseInfo = cleanText(process.env.BASE_URL) || "(auto-detected)";
-  
   console.log(`✓ EliteMindset MCP server running on port ${PORT}`);
-  console.log(`✓ BASE_URL: ${baseInfo}`);
+  console.log(`✓ BASE_URL: ${cleanText(process.env.BASE_URL) || "(auto-detected)"}`);
   console.log(`✓ Static images: /images/*`);
   console.log(`✓ Health check: /healthz`);
   console.log(`✓ Root path: / → /sse`);
   console.log(`✓ SSE endpoint: /sse`);
   console.log(`✓ CTA after 3 interactions`);
-  console.log(`✓ Simple mode: Text responses with image URLs`);
+  console.log(`✓ Tool registered: next_best_step`);
 });
