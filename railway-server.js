@@ -4,12 +4,118 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import path from "path";
 import { fileURLToPath } from "url";
-import { readFileSync } from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 10000;
+
+// Widget HTML template (embedded directly)
+const WIDGET_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EliteMindset</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+      color: #ffffff;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    .container { max-width: 600px; margin: 0 auto; }
+    .image-container {
+      width: 100%;
+      margin-bottom: 24px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(212, 175, 55, 0.2);
+    }
+    .image-container img { width: 100%; height: auto; display: block; }
+    .message-container {
+      background: rgba(255, 255, 255, 0.05);
+      border-left: 4px solid #d4af37;
+      padding: 20px 24px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+    .message-text { font-size: 18px; color: #f0f0f0; margin-bottom: 16px; font-weight: 400; }
+    .action-prompt { font-size: 16px; color: #d4af37; font-style: italic; font-weight: 500; }
+    .cta-container {
+      text-align: center;
+      margin-top: 32px;
+      padding-top: 20px;
+      border-top: 1px solid rgba(212, 175, 55, 0.3);
+      display: none;
+    }
+    .cta-container.visible { display: block; }
+    .cta-text { font-size: 15px; color: #d4af37; font-weight: 500; }
+    .cta-link {
+      color: #d4af37;
+      text-decoration: none;
+      font-weight: 600;
+      transition: opacity 0.2s;
+    }
+    .cta-link:hover { opacity: 0.8; }
+    @media (max-width: 600px) {
+      .message-text { font-size: 16px; }
+      .action-prompt { font-size: 14px; }
+      .cta-text { font-size: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="image-container">
+      <img id="state-image" src="" alt="Current State">
+    </div>
+    <div class="message-container">
+      <div class="message-text" id="message"></div>
+      <div class="action-prompt" id="action"></div>
+    </div>
+    <div class="cta-container" id="cta-container">
+      <div class="cta-text">
+        When you're ready, continue at <a href="https://elitemindset.ai" target="_blank" class="cta-link">EliteMindset.ai</a>
+      </div>
+    </div>
+  </div>
+  <script>
+    const stateImages = {
+      'S1': 'overwhelmed.png',
+      'S2': 'stuck.png', 
+      'S3': 'ready-to-act.png',
+      'S4': 'unclear-direction.png'
+    };
+    function updateWidget() {
+      const toolOutput = window.openai?.toolOutput;
+      if (!toolOutput) return;
+      const state = toolOutput.state || 'S1';
+      const message = toolOutput.message || '';
+      const ask = toolOutput.ask || '';
+      const ctaAllowed = toolOutput.cta_allowed || false;
+      const imageElement = document.getElementById('state-image');
+      const imageName = stateImages[state];
+      imageElement.src = \`/images/\${imageName}\`;
+      imageElement.alt = \`\${state} - Current State\`;
+      document.getElementById('message').textContent = message;
+      document.getElementById('action').textContent = ask;
+      const ctaContainer = document.getElementById('cta-container');
+      if (ctaAllowed) {
+        ctaContainer.classList.add('visible');
+      } else {
+        ctaContainer.classList.remove('visible');
+      }
+    }
+    if (window.openai) updateWidget();
+    if (window.openai?.addEventListener) {
+      window.openai.addEventListener('toolOutput', updateWidget);
+    }
+  </script>
+</body>
+</html>`;
 
 // ----------------- Minimal state machine -----------------
 function cleanText(v) {
@@ -173,41 +279,12 @@ app.get("/sse", async (req, res) => {
       version: "1.0.0",
     });
 
-    // Read the widget HTML file
-    const widgetHtml = readFileSync(
-      path.join(__dirname, "elitemindset-widget.html"),
-      "utf8"
-    );
-
-    // Register the widget as an MCP resource
-    mcp.resource(
-      {
-        uri: "ui://widget/elitemindset.html",
-        name: "elitemindset-clarity-widget",
-        mimeType: "text/html+skybridge",
-        description: "Visual guidance for overcoming procrastination and gaining clarity",
-      },
-      async () => ({
-        contents: [
-          {
-            uri: "ui://widget/elitemindset.html",
-            mimeType: "text/html+skybridge",
-            text: widgetHtml,
-            _meta: {
-              "openai/widgetPrefersBorder": true,
-              "openai/widgetDomain": "https://chatgpt.com",
-            },
-          },
-        ],
-      })
-    );
-
     // Initialize interaction count for this session if not exists
     if (!interactionCounts.has(sessionId)) {
       interactionCounts.set(sessionId, 0);
     }
 
-    // Define the single tool with widget output
+    // Define the single tool with embedded widget HTML
     mcp.tool(
       {
         name: "next_best_step",
@@ -220,9 +297,6 @@ app.get("/sse", async (req, res) => {
               "What the user just said (their concern, question, or confirmation of completion)"
             ),
         }),
-        _meta: {
-          "openai/outputTemplate": "ui://widget/elitemindset.html",
-        },
       },
       async ({ user_input }) => {
         // Increment interaction count
@@ -234,9 +308,8 @@ app.get("/sse", async (req, res) => {
 
         const state = inferState(user_input);
         const data = stateData[state];
-        const BASE_URL = getBaseUrlFromReq(req);
 
-        // Return structured content for the widget
+        // Return structured content for the widget AND the HTML widget
         return {
           structuredContent: {
             state,
@@ -250,6 +323,10 @@ app.get("/sse", async (req, res) => {
             {
               type: "text",
               text: `${data.message}\n\n${data.ask}`,
+            },
+            {
+              type: "text/html",
+              text: WIDGET_HTML,
             },
           ],
         };
@@ -336,7 +413,7 @@ app.listen(PORT, () => {
   console.log(`✓ EliteMindset MCP server running on port ${PORT}`);
   console.log(`✓ BASE_URL: ${baseInfo}`);
   console.log(`✓ Static images: /images/*`);
-  console.log(`✓ Widget resource: ui://widget/elitemindset.html`);
+  console.log(`✓ Widget: Embedded HTML in tool response`);
   console.log(`✓ Health check: /healthz`);
   console.log(`✓ Root path: / (redirects to /sse for ChatGPT)`);
   console.log(`✓ MCP alias: /mcp`);
