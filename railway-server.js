@@ -150,6 +150,12 @@ async function getImageBase64(imageName) {
   }
 }
 
+// Root path handler - ChatGPT looks here first
+app.get("/", (req, res) => {
+  req.url = "/sse";
+  app._router.handle(req, res);
+});
+
 // MCP alias endpoint
 app.get("/mcp", (req, res) => {
   req.url = "/sse";
