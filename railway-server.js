@@ -10,114 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 10000;
 
-// Widget HTML template (embedded directly)
-const WIDGET_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EliteMindset</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
-      color: #ffffff;
-      padding: 20px;
-      line-height: 1.6;
-    }
-    .container { max-width: 600px; margin: 0 auto; }
-    .image-container {
-      width: 100%;
-      margin-bottom: 24px;
-      border-radius: 12px;
-      overflow: hidden;
-      box-shadow: 0 8px 32px rgba(212, 175, 55, 0.2);
-    }
-    .image-container img { width: 100%; height: auto; display: block; }
-    .message-container {
-      background: rgba(255, 255, 255, 0.05);
-      border-left: 4px solid #d4af37;
-      padding: 20px 24px;
-      border-radius: 8px;
-      margin-bottom: 20px;
-    }
-    .message-text { font-size: 18px; color: #f0f0f0; margin-bottom: 16px; font-weight: 400; }
-    .action-prompt { font-size: 16px; color: #d4af37; font-style: italic; font-weight: 500; }
-    .cta-container {
-      text-align: center;
-      margin-top: 32px;
-      padding-top: 20px;
-      border-top: 1px solid rgba(212, 175, 55, 0.3);
-      display: none;
-    }
-    .cta-container.visible { display: block; }
-    .cta-text { font-size: 15px; color: #d4af37; font-weight: 500; }
-    .cta-link {
-      color: #d4af37;
-      text-decoration: none;
-      font-weight: 600;
-      transition: opacity 0.2s;
-    }
-    .cta-link:hover { opacity: 0.8; }
-    @media (max-width: 600px) {
-      .message-text { font-size: 16px; }
-      .action-prompt { font-size: 14px; }
-      .cta-text { font-size: 14px; }
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="image-container">
-      <img id="state-image" src="" alt="Current State">
-    </div>
-    <div class="message-container">
-      <div class="message-text" id="message"></div>
-      <div class="action-prompt" id="action"></div>
-    </div>
-    <div class="cta-container" id="cta-container">
-      <div class="cta-text">
-        When you're ready, continue at <a href="https://elitemindset.ai" target="_blank" class="cta-link">EliteMindset.ai</a>
-      </div>
-    </div>
-  </div>
-  <script>
-    const stateImages = {
-      'S1': 'overwhelmed.png',
-      'S2': 'stuck.png', 
-      'S3': 'ready-to-act.png',
-      'S4': 'unclear-direction.png'
-    };
-    function updateWidget() {
-      const toolOutput = window.openai?.toolOutput;
-      if (!toolOutput) return;
-      const state = toolOutput.state || 'S1';
-      const message = toolOutput.message || '';
-      const ask = toolOutput.ask || '';
-      const ctaAllowed = toolOutput.cta_allowed || false;
-      const imageElement = document.getElementById('state-image');
-      const imageName = stateImages[state];
-      imageElement.src = \`/images/\${imageName}\`;
-      imageElement.alt = \`\${state} - Current State\`;
-      document.getElementById('message').textContent = message;
-      document.getElementById('action').textContent = ask;
-      const ctaContainer = document.getElementById('cta-container');
-      if (ctaAllowed) {
-        ctaContainer.classList.add('visible');
-      } else {
-        ctaContainer.classList.remove('visible');
-      }
-    }
-    if (window.openai) updateWidget();
-    if (window.openai?.addEventListener) {
-      window.openai.addEventListener('toolOutput', updateWidget);
-    }
-  </script>
-</body>
-</html>`;
-
-// ----------------- Minimal state machine -----------------
+// ----------------- Helper functions -----------------
 function cleanText(v) {
   return String(v || "").trim();
 }
@@ -176,7 +69,6 @@ function inferState(userText) {
   return "S1";
 }
 
-// Auto-detect base URL from request headers
 function getBaseUrlFromReq(req) {
   const env = cleanText(process.env.BASE_URL);
   if (env) return env.replace(/\/+$/, "");
@@ -192,7 +84,7 @@ function getSessionId(req) {
   return cleanText(req.query.sessionId || req.query.session_id || "default");
 }
 
-// ----------------- State responses -----------------
+// ----------------- State data -----------------
 const stateData = {
   S1: {
     message:
@@ -224,12 +116,12 @@ const stateData = {
   },
 };
 
-// Store MCP servers, transports, and interaction counts per session
+// ----------------- Session storage -----------------
 const transports = new Map();
 const mcpServers = new Map();
-const interactionCounts = new Map(); // Track interactions per session
+const interactionCounts = new Map();
 
-// Express app
+// ----------------- Express app -----------------
 const app = express();
 app.use(express.json());
 
@@ -241,21 +133,19 @@ app.get("/healthz", (req, res) => {
 // Serve static images
 app.use("/images", express.static(path.join(__dirname, "images")));
 
-// Root path handler - ChatGPT looks here first
+// Root path handler
 app.get("/", (req, res) => {
   req.url = "/sse";
   app._router.handle(req, res);
 });
 
-// MCP alias endpoint
+// MCP alias
 app.get("/mcp", (req, res) => {
   req.url = "/sse";
   app._router.handle(req, res);
 });
 
-/**
- * GET /sse - Initialize SSE connection with IMMEDIATE handshake
- */
+// ----------------- SSE Connection -----------------
 app.get("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
 
@@ -265,7 +155,7 @@ app.get("/sse", async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
 
-  // CRITICAL: Send endpoint event IMMEDIATELY (within 100ms)
+  // Send endpoint event immediately
   res.write(`event: endpoint\n`);
   res.write(`data: /sse\n\n`);
   res.flushHeaders();
@@ -273,18 +163,18 @@ app.get("/sse", async (req, res) => {
   console.log(`✓ SSE connected: session=${sessionId}`);
 
   try {
-    // Create MCP server for this session
+    // Create MCP server
     const mcp = new McpServer({
       name: "elitemindset-clarity",
       version: "1.0.0",
     });
 
-    // Initialize interaction count for this session if not exists
+    // Initialize interaction count
     if (!interactionCounts.has(sessionId)) {
       interactionCounts.set(sessionId, 0);
     }
 
-    // Define the single tool with embedded widget HTML
+    // Define tool
     mcp.tool(
       {
         name: "next_best_step",
@@ -293,54 +183,51 @@ app.get("/sse", async (req, res) => {
         inputSchema: z.object({
           user_input: z
             .string()
-            .describe(
-              "What the user just said (their concern, question, or confirmation of completion)"
-            ),
+            .describe("What the user just said (their concern, question, or confirmation of completion)"),
         }),
       },
-      async ({ user_input }) => {
+      async ({ user_input }, { _meta }) => {
         // Increment interaction count
         const currentCount = interactionCounts.get(sessionId) + 1;
         interactionCounts.set(sessionId, currentCount);
 
-        // Determine if CTA should be shown (after 3 interactions)
+        // Determine if CTA should be shown
         const ctaAllowed = currentCount >= 3;
 
         const state = inferState(user_input);
         const data = stateData[state];
+        const BASE_URL = getBaseUrlFromReq(req);
 
-        // Return structured content for the widget AND the HTML widget
+        // Build response message
+        let responseMessage = `${data.message}\n\n${data.ask}`;
+        
+        // Add CTA if allowed
+        if (ctaAllowed) {
+          responseMessage += `\n\n━━━━━━━━━━━━━━━━━━━━━━\nWhen you're ready, continue at EliteMindset.ai`;
+        }
+
+        // Add image reference
+        responseMessage += `\n\n[Image: ${BASE_URL}/images/${data.image}]`;
+
         return {
-          structuredContent: {
-            state,
-            message: data.message,
-            ask: data.ask,
-            cta_allowed: ctaAllowed,
-            next_state: data.next_state,
-            interaction_count: currentCount,
-          },
           content: [
             {
               type: "text",
-              text: `${data.message}\n\n${data.ask}`,
-            },
-            {
-              type: "text/html",
-              text: WIDGET_HTML,
+              text: responseMessage,
             },
           ],
         };
       }
     );
 
-    // Create SSE transport with this response
+    // Create transport
     const transport = new SSEServerTransport("/sse", res);
     await mcp.connect(transport);
 
     transports.set(sessionId, transport);
     mcpServers.set(sessionId, mcp);
 
-    // Keepalive every 15 seconds
+    // Keepalive
     const keepAlive = setInterval(() => {
       if (!res.writableEnded) {
         res.write(": ping\n\n");
@@ -349,13 +236,12 @@ app.get("/sse", async (req, res) => {
       }
     }, 15000);
 
-    // Cleanup on disconnect
+    // Cleanup
     req.on("close", () => {
       console.log(`✗ SSE disconnected: session=${sessionId}`);
       clearInterval(keepAlive);
       transports.delete(sessionId);
       mcpServers.delete(sessionId);
-      // Keep interaction count for session resume
     });
   } catch (err) {
     console.error("SSE init error:", err);
@@ -365,9 +251,7 @@ app.get("/sse", async (req, res) => {
   }
 });
 
-/**
- * POST /sse - Handle MCP messages
- */
+// ----------------- Message handlers -----------------
 app.post("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
   const transport = transports.get(sessionId);
@@ -386,7 +270,6 @@ app.post("/sse", async (req, res) => {
   }
 });
 
-// Compatibility endpoint
 app.post("/messages", async (req, res) => {
   const sessionId = getSessionId(req);
   const transport = transports.get(sessionId);
@@ -405,19 +288,16 @@ app.post("/messages", async (req, res) => {
   }
 });
 
+// ----------------- Start server -----------------
 app.listen(PORT, () => {
-  const baseInfo = cleanText(process.env.BASE_URL) 
-    ? `${process.env.BASE_URL}` 
-    : `(auto-detected from requests)`;
+  const baseInfo = cleanText(process.env.BASE_URL) || "(auto-detected)";
   
   console.log(`✓ EliteMindset MCP server running on port ${PORT}`);
   console.log(`✓ BASE_URL: ${baseInfo}`);
   console.log(`✓ Static images: /images/*`);
-  console.log(`✓ Widget: Embedded HTML in tool response`);
   console.log(`✓ Health check: /healthz`);
-  console.log(`✓ Root path: / (redirects to /sse for ChatGPT)`);
-  console.log(`✓ MCP alias: /mcp`);
+  console.log(`✓ Root path: / → /sse`);
   console.log(`✓ SSE endpoint: /sse`);
-  console.log(`✓ IMMEDIATE handshake: endpoint event sent within 100ms`);
-  console.log(`✓ CTA displays after 3 interactions`);
+  console.log(`✓ CTA after 3 interactions`);
+  console.log(`✓ Simple mode: Text responses with image URLs`);
 });
