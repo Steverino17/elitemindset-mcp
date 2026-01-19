@@ -69,13 +69,11 @@ function inferState(userText) {
   return "S1";
 }
 
-// Auto-detect base URL from request headers (works behind proxies)
+// Auto-detect base URL from request headers
 function getBaseUrlFromReq(req) {
-  // Prefer env var if explicitly set
   const env = cleanText(process.env.BASE_URL);
   if (env) return env.replace(/\/+$/, "");
 
-  // Infer from proxy headers
   const proto =
     cleanText(req.headers["x-forwarded-proto"]) ||
     (req.secure ? "https" : "http");
@@ -88,10 +86,10 @@ function getBaseUrlFromReq(req) {
 // Map states to images
 function getImageForState(state, baseUrl) {
   const imageMap = {
-    S1: "overwhelmed.png",        // Stuck/Overwhelmed → chaotic desk
-    S2: "stuck.png",               // Done/Progress → person in ice cave
-    S3: "ready-to-act.png",        // Momentum → open road
-    S4: "unclear-direction.png",   // Need Clarity → forest signs
+    S1: "overwhelmed.png",
+    S2: "stuck.png",
+    S3: "ready-to-act.png",
+    S4: "unclear-direction.png",
   };
   const file = imageMap[state] || imageMap.S1;
   return `${baseUrl}/images/${file}`;
@@ -161,17 +159,14 @@ const mcp = new McpServer({
   version: "1.0.0",
 });
 
-// Smart base URL caching with HTTPS upgrade
 let cachedBaseUrl = null;
 
 function updateCachedBaseUrl(newUrl) {
-  // Set if empty
   if (!cachedBaseUrl) {
     cachedBaseUrl = newUrl;
     return;
   }
   
-  // Upgrade HTTP to HTTPS if new URL is HTTPS (handles weird first requests)
   if (cachedBaseUrl.startsWith("http://") && newUrl.startsWith("https://")) {
     cachedBaseUrl = newUrl;
   }
@@ -187,7 +182,6 @@ mcp.tool(
     cta_ok: z.boolean().optional(),
   },
   async ({ goal, context, user_message, cta_ok }) => {
-    // Use cached base URL or fallback
     const baseUrl = 
       cachedBaseUrl || 
       cleanText(process.env.BASE_URL) || 
@@ -203,7 +197,7 @@ mcp.tool(
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
-// Serve static images from /images folder
+// Serve static images
 app.use("/images", express.static(path.join(__dirname, "images")));
 
 app.get("/", (_req, res) => res.status(200).send("OK"));
@@ -212,7 +206,6 @@ app.get("/mcp", (_req, res) => res.status(200).send("OK"));
 
 const transports = new Map();
 
-// Accept both sessionId and session_id parameters
 function getSessionId(req) {
   const a = cleanText(req.query.sessionId);
   const b = cleanText(req.query.session_id);
@@ -220,28 +213,34 @@ function getSessionId(req) {
 }
 
 /**
- * GET /sse
- * Initialize SSE connection for MCP transport
+ * GET /sse - ChatGPT-compatible SSE endpoint
+ * CRITICAL: ChatGPT requires immediate response with proper SSE format
  */
 app.get("/sse", async (req, res) => {
   let keepAlive = null;
 
   try {
-    res.status(200);
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
+    // CRITICAL: Set headers IMMEDIATELY before any async operations
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
 
-    // Send immediate bytes so verifiers see active SSE stream
-    res.write("event: connected\ndata: ok\n\n");
+    // CRITICAL: Flush headers immediately
+    res.flushHeaders();
 
-    // SSE keepalive ping every 15 seconds to prevent proxy timeout
+    // Send immediate SSE event - ChatGPT needs this within 5 seconds
+    res.write("event: endpoint\n");
+    res.write(`data: /sse\n\n`);
+
+    // SSE keepalive every 15 seconds
     keepAlive = setInterval(() => {
       try {
         res.write(": ping\n\n");
-      } catch {
-        // Connection closed, interval will be cleared on 'close' event
+      } catch (err) {
+        // Connection closed
       }
     }, 15000);
 
@@ -249,7 +248,7 @@ app.get("/sse", async (req, res) => {
     const transport = new SSEServerTransport("/sse", res);
     transports.set(transport.sessionId, transport);
 
-    // Update cached base URL with smart HTTPS upgrade logic
+    // Update base URL
     const inferredUrl = getBaseUrlFromReq(req);
     updateCachedBaseUrl(inferredUrl);
 
@@ -260,6 +259,7 @@ app.get("/sse", async (req, res) => {
 
     await mcp.connect(transport);
   } catch (err) {
+    console.error("SSE connection error:", err);
     if (keepAlive) clearInterval(keepAlive);
     if (!res.headersSent) {
       res.status(500).send("SSE init error");
@@ -268,40 +268,39 @@ app.get("/sse", async (req, res) => {
 });
 
 /**
- * POST /sse
- * Handle incoming MCP messages
+ * POST /sse - Handle MCP messages
  */
 app.post("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
   const transport = transports.get(sessionId);
 
   if (!transport) {
-    res.status(404).send("Unknown sessionId");
-    return;
+    return res.status(404).send("Unknown sessionId");
   }
 
   try {
     await transport.handlePostMessage(req, res);
   } catch (err) {
+    console.error("Message handling error:", err);
     if (!res.headersSent) {
       res.status(500).send("Message handling error");
     }
   }
 });
 
-// Additional compatibility endpoint for older MCP clients
+// Compatibility endpoint
 app.post("/messages", async (req, res) => {
   const sessionId = getSessionId(req);
   const transport = transports.get(sessionId);
 
   if (!transport) {
-    res.status(404).send("Unknown sessionId");
-    return;
+    return res.status(404).send("Unknown sessionId");
   }
 
   try {
     await transport.handlePostMessage(req, res);
   } catch (err) {
+    console.error("Message handling error:", err);
     if (!res.headersSent) {
       res.status(500).send("Message handling error");
     }
