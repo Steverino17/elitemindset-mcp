@@ -6,17 +6,16 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 const PORT = process.env.PORT || 10000;
 
 /**
- * Goal:
- * - Make ChatGPT "Create connector" succeed (it expects immediate SSE headers + some data).
- * - Keep MCP working over SSE as normal.
+ * Fix:
+ * ChatGPT connector uses:
+ *   GET  /sse  (open stream)
+ *   POST /sse  (send messages back)
  *
- * Strategy:
- * - /sse responds immediately with proper SSE headers and sends a quick "connected" event.
- * - Then we attach MCP via SSEServerTransport (so real MCP traffic can proceed).
- * - /messages handles post messages for the active SSE session.
+ * Your logs showed POST /sse was 404 => timeout.
+ * This version implements BOTH GET /sse and POST /sse correctly.
  */
 
-// ---------- Minimal state machine ----------
+// ----------------- Minimal state machine -----------------
 function cleanText(v) {
   return String(v || "").trim();
 }
@@ -125,7 +124,7 @@ function buildUserText({ user_message, goal, context }) {
   return parts.join(" | ").trim();
 }
 
-// ---------- MCP server ----------
+// ----------------- MCP server -----------------
 const mcp = new McpServer({
   name: "elitemindset-mcp",
   version: "1.0.0",
@@ -147,35 +146,32 @@ mcp.tool(
   }
 );
 
-// ---------- HTTP server ----------
+// ----------------- HTTP server -----------------
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
-// Quick checks
+// Fast checks (browser / Render health)
 app.get("/", (_req, res) => res.status(200).send("OK"));
 app.get("/healthz", (_req, res) => res.status(200).send("OK"));
 
 // Active SSE transports by sessionId
 const transports = new Map();
 
-// This is the URL you will use in the connector:
-// https://elitemindset-mcp.onrender.com/sse
+/**
+ * GET /sse
+ * - Must immediately behave like SSE
+ * - Keep connection open
+ */
 app.get("/sse", async (_req, res) => {
   try {
-    // Force immediate SSE headers (so connector verification doesn't time out)
-    res.status(200);
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    // Helpful for some proxies
-    res.setHeader("X-Accel-Buffering", "no");
-
-    // Send an immediate SSE event so the verifier sees data quickly
-    res.write(`event: connected\ndata: ok\n\n`);
-
-    // Now attach the MCP SSE transport
-    const transport = new SSEServerTransport("/messages", res);
+    // Create transport FIRST (it will manage SSE response)
+    // IMPORTANT: post endpoint must match what ChatGPT actually POSTs to => "/sse"
+    const transport = new SSEServerTransport("/sse", res);
     transports.set(transport.sessionId, transport);
+
+    // Send one immediate event so verification sees data fast
+    // (safe to write; this is plain SSE)
+    res.write(`event: connected\ndata: ok\n\n`);
 
     res.on("close", () => {
       transports.delete(transport.sessionId);
@@ -187,6 +183,28 @@ app.get("/sse", async (_req, res) => {
   }
 });
 
+/**
+ * POST /sse
+ * ChatGPT connector posts here (your logs proved it).
+ * Must route message to the correct transport by sessionId.
+ */
+app.post("/sse", async (req, res) => {
+  const sessionId = cleanText(req.query.sessionId);
+  const transport = transports.get(sessionId);
+
+  if (!transport) {
+    res.status(404).send("Unknown sessionId");
+    return;
+  }
+
+  try {
+    await transport.handlePostMessage(req, res);
+  } catch (err) {
+    if (!res.headersSent) res.status(500).send("Message handling error");
+  }
+});
+
+// (Optional compatibility): if anything still posts to /messages, accept it too.
 app.post("/messages", async (req, res) => {
   const sessionId = cleanText(req.query.sessionId);
   const transport = transports.get(sessionId);
