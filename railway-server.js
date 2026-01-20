@@ -153,6 +153,8 @@ app.get("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
 
   console.log(`✓ SSE connecting: session=${sessionId}`);
+  console.log(`  Headers:`, JSON.stringify(req.headers, null, 2));
+  console.log(`  Query:`, JSON.stringify(req.query, null, 2));
 
   try {
     const mcp = new McpServer({
@@ -164,19 +166,22 @@ app.get("/sse", async (req, res) => {
       interactionCounts.set(sessionId, 0);
     }
 
-    // Register tool
+    console.log(`  Registering tool...`);
+
+    // Register tool with proper Zod schema
     mcp.registerTool(
       "next_best_step",
       {
         description:
           "Help user overcome procrastination and analysis-paralysis by identifying the smallest immediate next action. Use when user expresses being stuck, overwhelmed, unclear, or asks for direction.",
-        inputSchema: {
+        inputSchema: z.object({
           user_input: z
             .string()
             .describe("What the user just said (their concern, question, or confirmation of completion)"),
-        },
+        }),
       },
       async ({ user_input }) => {
+        console.log(`  Tool called with input: ${user_input.substring(0, 50)}...`);
         const currentCount = interactionCounts.get(sessionId) + 1;
         interactionCounts.set(sessionId, currentCount);
 
@@ -204,8 +209,13 @@ app.get("/sse", async (req, res) => {
       }
     );
 
+    console.log(`  Tool registered successfully`);
+    console.log(`  Creating SSE transport...`);
+
     // Create transport - it handles all headers automatically
     const transport = new SSEServerTransport("/sse", res);
+    
+    console.log(`  Connecting MCP server to transport...`);
     await mcp.connect(transport);
 
     transports.set(sessionId, transport);
@@ -221,6 +231,7 @@ app.get("/sse", async (req, res) => {
     });
   } catch (err) {
     console.error("SSE init error:", err);
+    console.error("  Stack:", err.stack);
     if (!res.headersSent) {
       res.status(500).send("SSE init error");
     }
@@ -230,16 +241,25 @@ app.get("/sse", async (req, res) => {
 // POST endpoint for SSE messages
 app.post("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
+  console.log(`📨 POST /sse: session=${sessionId}`);
+  console.log(`  Body:`, JSON.stringify(req.body, null, 2).substring(0, 200));
+  
   const transport = transports.get(sessionId);
 
   if (!transport) {
+    console.log(`  ❌ No transport found for session=${sessionId}`);
+    console.log(`  Available sessions:`, Array.from(transports.keys()));
     return res.status(404).send("Unknown sessionId");
   }
 
+  console.log(`  ✓ Transport found, handling message...`);
+  
   try {
     await transport.handlePostMessage(req, res);
+    console.log(`  ✓ Message handled successfully`);
   } catch (err) {
-    console.error("Message handling error:", err);
+    console.error("  ❌ Message handling error:", err);
+    console.error("  Stack:", err.stack);
     if (!res.headersSent) {
       res.status(500).send("Message handling error");
     }
@@ -249,16 +269,25 @@ app.post("/sse", async (req, res) => {
 // Alternative POST endpoint
 app.post("/messages", async (req, res) => {
   const sessionId = getSessionId(req);
+  console.log(`📨 POST /messages: session=${sessionId}`);
+  console.log(`  Body:`, JSON.stringify(req.body, null, 2).substring(0, 200));
+  
   const transport = transports.get(sessionId);
 
   if (!transport) {
+    console.log(`  ❌ No transport found for session=${sessionId}`);
+    console.log(`  Available sessions:`, Array.from(transports.keys()));
     return res.status(404).send("Unknown sessionId");
   }
 
+  console.log(`  ✓ Transport found, handling message...`);
+  
   try {
     await transport.handlePostMessage(req, res);
+    console.log(`  ✓ Message handled successfully`);
   } catch (err) {
-    console.error("Message handling error:", err);
+    console.error("  ❌ Message handling error:", err);
+    console.error("  Stack:", err.stack);
     if (!res.headersSent) {
       res.status(500).send("Message handling error");
     }
