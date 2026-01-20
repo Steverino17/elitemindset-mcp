@@ -145,16 +145,7 @@ app.get("/mcp", (req, res) => {
 app.get("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-
-  res.write(`event: endpoint\n`);
-  res.write(`data: /sse\n\n`);
-  res.flushHeaders();
-
-  console.log(`✓ SSE connected: session=${sessionId}`);
+  console.log(`✓ SSE connecting: session=${sessionId}`);
 
   try {
     const mcp = new McpServer({
@@ -206,23 +197,18 @@ app.get("/sse", async (req, res) => {
       }
     );
 
+    // Create transport - it handles all headers automatically
     const transport = new SSEServerTransport("/sse", res);
     await mcp.connect(transport);
 
     transports.set(sessionId, transport);
     mcpServers.set(sessionId, mcp);
 
-    const keepAlive = setInterval(() => {
-      if (!res.writableEnded) {
-        res.write(": ping\n\n");
-      } else {
-        clearInterval(keepAlive);
-      }
-    }, 15000);
+    console.log(`✓ SSE connected: session=${sessionId}`);
 
+    // Cleanup
     req.on("close", () => {
       console.log(`✗ SSE disconnected: session=${sessionId}`);
-      clearInterval(keepAlive);
       transports.delete(sessionId);
       mcpServers.delete(sessionId);
     });
