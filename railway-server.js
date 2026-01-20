@@ -69,21 +69,6 @@ function inferState(userText) {
   return "S1";
 }
 
-function getBaseUrlFromReq(req) {
-  const env = cleanText(process.env.BASE_URL);
-  if (env) return env.replace(/\/+$/, "");
-
-  const proto =
-    cleanText(req.headers["x-forwarded-proto"]) ||
-    (req.secure ? "https" : "http");
-  const host = cleanText(req.headers["x-forwarded-host"] || req.headers.host);
-  return host ? `${proto}://${host}` : "";
-}
-
-function getSessionId(req) {
-  return cleanText(req.query.sessionId || req.query.session_id || "default");
-}
-
 // State data
 const stateData = {
   S1: {
@@ -116,16 +101,15 @@ const stateData = {
   },
 };
 
-// Session storage
+// Storage for transports by sessionId
 const transports = new Map();
-const mcpServers = new Map();
 const interactionCounts = new Map();
 
 // Express app
 const app = express();
 app.use(express.json());
 
-// Health check endpoint
+// Health check
 app.get("/healthz", (req, res) => {
   res.send("OK");
 });
@@ -133,42 +117,29 @@ app.get("/healthz", (req, res) => {
 // Static images
 app.use("/images", express.static(path.join(__dirname, "images")));
 
-// Root endpoint - returns server info (NO redirect to SSE!)
+// Root endpoint
 app.get("/", (req, res) => {
   res.json({
     name: "EliteMindset MCP Server",
     version: "1.0.0",
     status: "running",
-    endpoints: {
-      health: "/healthz",
-      sse: "/sse",
-      images: "/images/*"
-    },
-    description: "MCP server for EliteMindset clarity coaching"
+    tool: "next_best_step"
   });
 });
 
-// SSE Connection endpoint
+// SSE Connection
 app.get("/sse", async (req, res) => {
-  const sessionId = getSessionId(req);
-
-  console.log(`✓ SSE connecting: session=${sessionId}`);
-  console.log(`  Headers:`, JSON.stringify(req.headers, null, 2));
-  console.log(`  Query:`, JSON.stringify(req.query, null, 2));
-
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log("📡 GET /sse");
+  
   try {
+    // Create MCP server for this connection
     const mcp = new McpServer({
       name: "elitemindset-clarity",
       version: "1.0.0",
     });
 
-    if (!interactionCounts.has(sessionId)) {
-      interactionCounts.set(sessionId, 0);
-    }
-
-    console.log(`  Registering tool...`);
-
-    // Register tool with proper Zod schema
+    // Register tool
     mcp.registerTool(
       "next_best_step",
       {
@@ -181,14 +152,16 @@ app.get("/sse", async (req, res) => {
         }),
       },
       async ({ user_input }) => {
-        console.log(`  Tool called with input: ${user_input.substring(0, 50)}...`);
-        const currentCount = interactionCounts.get(sessionId) + 1;
+        console.log(`🔧 Tool called with: ${user_input.substring(0, 50)}...`);
+        
+        const sessionId = "global";
+        const currentCount = (interactionCounts.get(sessionId) || 0) + 1;
         interactionCounts.set(sessionId, currentCount);
 
         const ctaAllowed = currentCount >= 3;
         const state = inferState(user_input);
         const data = stateData[state];
-        const BASE_URL = getBaseUrlFromReq(req);
+        const BASE_URL = process.env.BASE_URL || "https://elitemindset-mcp.onrender.com";
 
         let responseMessage = `${data.message}\n\n${data.ask}`;
         
@@ -209,100 +182,66 @@ app.get("/sse", async (req, res) => {
       }
     );
 
-    console.log(`  Tool registered successfully`);
-    console.log(`  Creating SSE transport...`);
-
-    // Create transport - it handles all headers automatically
+    // Create transport
     const transport = new SSEServerTransport("/sse", res);
     
-    console.log(`  Connecting MCP server to transport...`);
+    // Connect MCP to transport
     await mcp.connect(transport);
-
-    transports.set(sessionId, transport);
-    mcpServers.set(sessionId, mcp);
-
-    console.log(`✓ SSE connected: session=${sessionId}`);
+    
+    // Store transport - use connection-specific ID
+    const connectionId = Date.now().toString();
+    transports.set(connectionId, transport);
+    
+    console.log(`✓ SSE connected: ${connectionId}`);
+    console.log(`  Active transports: ${transports.size}`);
 
     // Cleanup on disconnect
     req.on("close", () => {
-      console.log(`✗ SSE disconnected: session=${sessionId}`);
-      transports.delete(sessionId);
-      mcpServers.delete(sessionId);
+      console.log(`✗ SSE disconnected: ${connectionId}`);
+      transports.delete(connectionId);
     });
+    
   } catch (err) {
-    console.error("SSE init error:", err);
-    console.error("  Stack:", err.stack);
+    console.error("❌ SSE error:", err.message);
     if (!res.headersSent) {
-      res.status(500).send("SSE init error");
+      res.status(500).send("SSE failed");
     }
   }
 });
 
-// POST endpoint for SSE messages
+// POST endpoint
 app.post("/sse", async (req, res) => {
-  const sessionId = getSessionId(req);
-  console.log(`📨 POST /sse: session=${sessionId}`);
-  console.log(`  Body:`, JSON.stringify(req.body, null, 2).substring(0, 200));
-  
-  const transport = transports.get(sessionId);
-
-  if (!transport) {
-    console.log(`  ❌ No transport found for session=${sessionId}`);
-    console.log(`  Available sessions:`, Array.from(transports.keys()));
-    return res.status(404).send("Unknown sessionId");
-  }
-
-  console.log(`  ✓ Transport found, handling message...`);
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log("📨 POST /sse");
+  console.log(`  Body: ${JSON.stringify(req.body).substring(0, 200)}`);
+  console.log(`  Active transports: ${transports.size}`);
   
   try {
+    // Use the most recent transport (last one added)
+    const transportArray = Array.from(transports.values());
+    const transport = transportArray[transportArray.length - 1];
+    
+    if (!transport) {
+      console.log("  ❌ No transports available");
+      return res.status(503).send("No active connection");
+    }
+    
+    console.log("  ✓ Using active transport");
     await transport.handlePostMessage(req, res);
-    console.log(`  ✓ Message handled successfully`);
+    
   } catch (err) {
-    console.error("  ❌ Message handling error:", err);
-    console.error("  Stack:", err.stack);
+    console.error("  ❌ POST error:", err.message);
     if (!res.headersSent) {
-      res.status(500).send("Message handling error");
+      res.status(500).send("POST failed");
     }
   }
 });
 
-// Alternative POST endpoint
-app.post("/messages", async (req, res) => {
-  const sessionId = getSessionId(req);
-  console.log(`📨 POST /messages: session=${sessionId}`);
-  console.log(`  Body:`, JSON.stringify(req.body, null, 2).substring(0, 200));
-  
-  const transport = transports.get(sessionId);
-
-  if (!transport) {
-    console.log(`  ❌ No transport found for session=${sessionId}`);
-    console.log(`  Available sessions:`, Array.from(transports.keys()));
-    return res.status(404).send("Unknown sessionId");
-  }
-
-  console.log(`  ✓ Transport found, handling message...`);
-  
-  try {
-    await transport.handlePostMessage(req, res);
-    console.log(`  ✓ Message handled successfully`);
-  } catch (err) {
-    console.error("  ❌ Message handling error:", err);
-    console.error("  Stack:", err.stack);
-    if (!res.headersSent) {
-      res.status(500).send("Message handling error");
-    }
-  }
-});
-
-// Start server - CRITICAL: Bind to 0.0.0.0 for Render!
+// Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✓ EliteMindset MCP server running on port ${PORT}`);
-  console.log(`✓ Listening on 0.0.0.0:${PORT}`);
-  console.log(`✓ BASE_URL: ${cleanText(process.env.BASE_URL) || "(auto-detected)"}`);
-  console.log(`✓ Static images: /images/*`);
-  console.log(`✓ Health check: /healthz`);
-  console.log(`✓ Root path: / (server info)`);
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log(`✓ EliteMindset MCP Server READY`);
+  console.log(`✓ Port: ${PORT}`);
   console.log(`✓ SSE endpoint: /sse`);
-  console.log(`✓ CTA after 3 interactions`);
-  console.log(`✓ Tool registered: next_best_step`);
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 });
