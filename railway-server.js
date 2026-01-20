@@ -125,23 +125,30 @@ const interactionCounts = new Map();
 const app = express();
 app.use(express.json());
 
+// Health check endpoint
 app.get("/healthz", (req, res) => {
   res.send("OK");
 });
 
+// Static images
 app.use("/images", express.static(path.join(__dirname, "images")));
 
+// Root endpoint - returns server info (NO redirect to SSE!)
 app.get("/", (req, res) => {
-  req.url = "/sse";
-  app._router.handle(req, res);
+  res.json({
+    name: "EliteMindset MCP Server",
+    version: "1.0.0",
+    status: "running",
+    endpoints: {
+      health: "/healthz",
+      sse: "/sse",
+      images: "/images/*"
+    },
+    description: "MCP server for EliteMindset clarity coaching"
+  });
 });
 
-app.get("/mcp", (req, res) => {
-  req.url = "/sse";
-  app._router.handle(req, res);
-});
-
-// SSE Connection
+// SSE Connection endpoint
 app.get("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
 
@@ -157,7 +164,7 @@ app.get("/sse", async (req, res) => {
       interactionCounts.set(sessionId, 0);
     }
 
-    // Register tool - EXACT format from official SDK docs
+    // Register tool
     mcp.registerTool(
       "next_best_step",
       {
@@ -181,7 +188,7 @@ app.get("/sse", async (req, res) => {
         let responseMessage = `${data.message}\n\n${data.ask}`;
         
         if (ctaAllowed) {
-          responseMessage += `\n\n━━━━━━━━━━━━━━━━━━━━━━\nWhen you're ready, continue at EliteMindset.ai`;
+          responseMessage += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━\nWhen you're ready, continue at EliteMindset.ai`;
         }
 
         responseMessage += `\n\n[Image: ${BASE_URL}/images/${data.image}]`;
@@ -206,7 +213,7 @@ app.get("/sse", async (req, res) => {
 
     console.log(`✓ SSE connected: session=${sessionId}`);
 
-    // Cleanup
+    // Cleanup on disconnect
     req.on("close", () => {
       console.log(`✗ SSE disconnected: session=${sessionId}`);
       transports.delete(sessionId);
@@ -220,6 +227,7 @@ app.get("/sse", async (req, res) => {
   }
 });
 
+// POST endpoint for SSE messages
 app.post("/sse", async (req, res) => {
   const sessionId = getSessionId(req);
   const transport = transports.get(sessionId);
@@ -238,6 +246,7 @@ app.post("/sse", async (req, res) => {
   }
 });
 
+// Alternative POST endpoint
 app.post("/messages", async (req, res) => {
   const sessionId = getSessionId(req);
   const transport = transports.get(sessionId);
@@ -256,12 +265,14 @@ app.post("/messages", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+// Start server - CRITICAL: Bind to 0.0.0.0 for Render!
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`✓ EliteMindset MCP server running on port ${PORT}`);
+  console.log(`✓ Listening on 0.0.0.0:${PORT}`);
   console.log(`✓ BASE_URL: ${cleanText(process.env.BASE_URL) || "(auto-detected)"}`);
   console.log(`✓ Static images: /images/*`);
   console.log(`✓ Health check: /healthz`);
-  console.log(`✓ Root path: / → /sse`);
+  console.log(`✓ Root path: / (server info)`);
   console.log(`✓ SSE endpoint: /sse`);
   console.log(`✓ CTA after 3 interactions`);
   console.log(`✓ Tool registered: next_best_step`);
